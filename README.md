@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="bt — Better Together" width="480">
+  <img src="logo.png" alt="bt — Better Together" width="200">
 </p>
 
 # In sync. 🎧
