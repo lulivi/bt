@@ -50,6 +50,43 @@ setInterval(() => {
   }
 }, 1000);
 
+// Stay near the live edge. The browser plays from its own buffer, so what is buffered ahead
+// is how late this Listener hears the Radio (and its controls). Network hiccups grow that
+// buffer for good unless we catch up: gently by playing faster, or by jumping ahead.
+// Browsers append to `buffered` in ~1 s steps, so the real delay is the lowest reading
+// over a few seconds, not the latest one.
+// Tune these if phones stutter (raise LAG_FLOOR) or controls still feel slow (lower them).
+const LAG_FLOOR = 0.3; // seconds: never play faster with less than this buffered
+const LAG_CATCH_UP = 0.8; // seconds of delay above which we play faster
+const LAG_JUMP = 4; // seconds of delay above which we jump to the live edge
+const CATCH_UP_RATE = 1.1;
+const LAG_WINDOW = 4000; // ms of readings the delay is taken over
+const lagEl = document.getElementById("lag");
+let lagReadings = [];
+
+setInterval(() => {
+  if (!wantAudio || audio.paused || audio.buffered.length === 0) return;
+  const edge = audio.buffered.end(audio.buffered.length - 1);
+  const ahead = edge - audio.currentTime;
+  const now = Date.now();
+  lagReadings = lagReadings.filter((r) => now - r.at < LAG_WINDOW);
+  lagReadings.push({ at: now, ahead });
+  const delay = Math.min(...lagReadings.map((r) => r.ahead));
+
+  if (delay > LAG_JUMP) {
+    try {
+      audio.currentTime = edge - 1;
+      lagReadings = [];
+    } catch {
+      // Not seekable in this browser: playing faster still gets there.
+    }
+  }
+  if (ahead < LAG_FLOOR) audio.playbackRate = 1;
+  else if (delay > LAG_CATCH_UP) audio.playbackRate = CATCH_UP_RATE;
+  else audio.playbackRate = 1;
+  lagEl.textContent = "Delay: " + delay.toFixed(1) + " s";
+}, 250);
+
 // --- Shared state over a WebSocket; the server sends the full state on every change. ---
 const nowEl = document.getElementById("now");
 const queueEl = document.getElementById("queue");
