@@ -21,3 +21,35 @@ button.big {
   padding: 1.5rem;
   font-size: 1.5rem;
 }
+form {
+  display: flex;
+  gap: 0.5rem;
+}
+input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 0.5rem;
+}
+#error {
+  color: #d33;
+}
+#queue {
+  padding-left: 1.5rem;
+}
+#queue li {
+  padding: 0.25rem 0;
+}
+#queue .title {
+  display: block;
+}
+#queue .meta {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+#queue .current {
+  font-weight: bold;
+}
+#queue .status-error .title {
+  text-decoration: line-through;
+}

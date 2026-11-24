@@ -1,39 +1,33 @@
 mod radio;
+mod state;
+mod youtube;
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::stream;
 use rust_embed::Embed;
-use tokio::sync::broadcast;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, mpsc, watch};
 
 #[derive(Embed)]
 #[folder = "web/"]
 struct Web;
 
-struct Config {
-    addr: SocketAddr,
-    ffmpeg: String,
-}
-
-impl Config {
-    fn from_env() -> anyhow::Result<Self> {
-        let var =
-            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
-        Ok(Self {
-            addr: var("BT_ADDR", "127.0.0.1:3000")
-                .parse()
-                .context("BT_ADDR must be <ip>:<port>")?,
-            ffmpeg: var("BT_FFMPEG", "ffmpeg"),
-        })
-    }
+#[derive(Clone)]
+struct App {
+    mp3: broadcast::Sender<radio::Chunk>,
+    commands: mpsc::Sender<state::Command>,
+    state: watch::Receiver<state::State>,
 }
 
 #[tokio::main]
@@ -41,25 +35,43 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_ansi(std::io::stdout().is_terminal())
         .init();
-    let config = Config::from_env()?;
-    let mp3 = radio::start(&config.ffmpeg)?;
+    let var = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+    let addr: SocketAddr = var("BT_ADDR", "127.0.0.1:3000")
+        .parse()
+        .context("BT_ADDR must be <ip>:<port>")?;
+    let config = state::Config {
+        ffmpeg: var("BT_FFMPEG", "ffmpeg"),
+        ytdlp: var("BT_YTDLP", "yt-dlp"),
+        cache_dir: PathBuf::from(var("BT_CACHE_DIR", "cache")),
+    };
+    std::fs::create_dir_all(&config.cache_dir)
+        .with_context(|| format!("creating {}", config.cache_dir.display()))?;
+
+    let (ended_tx, ended_rx) = mpsc::unbounded_channel();
+    let (mp3, deck) = radio::start(&config.ffmpeg, ended_tx)?;
+    let (commands, state) = state::spawn(config, deck, ended_rx);
 
     let app = Router::new()
         .route("/stream", get(stream_mp3))
+        .route("/ws", get(ws))
         .fallback(get(static_file))
-        .with_state(mp3);
-    let listener = tokio::net::TcpListener::bind(config.addr)
+        .with_state(App {
+            mp3,
+            commands,
+            state,
+        });
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("binding {}", config.addr))?;
+        .with_context(|| format!("binding {addr}"))?;
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
 }
 
 /// The endless MP3 broadcast. `Range` is ignored on purpose: there is no length to satisfy.
-async fn stream_mp3(State(mp3): State<broadcast::Sender<radio::Chunk>>) -> Response {
+async fn stream_mp3(State(app): State<App>) -> Response {
     // A listener that falls behind the broadcast (`Lagged`) is dropped; it reconnects on its own.
-    let chunks = stream::unfold(mp3.subscribe(), |mut rx| async move {
+    let chunks = stream::unfold(app.mp3.subscribe(), |mut rx| async move {
         let chunk = rx.recv().await.ok()?;
         Some((Ok::<_, std::convert::Infallible>(chunk), rx))
     });
@@ -71,6 +83,69 @@ async fn stream_mp3(State(mp3): State<broadcast::Sender<radio::Chunk>>) -> Respo
         Body::from_stream(chunks),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum ClientMsg {
+    Add { url: String },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum ServerMsg<'a> {
+    State(&'a state::State),
+    Error { message: &'a str },
+}
+
+async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
+    upgrade
+        .max_message_size(4096)
+        .on_upgrade(|socket| listener(socket, app))
+}
+
+/// One Listener's WebSocket: the full State on connect and on every change; commands in.
+async fn listener(mut socket: WebSocket, mut app: App) {
+    // `changed()` never fires for the value already there, so send it first.
+    let mut out = to_text(&ServerMsg::State(&app.state.borrow_and_update()));
+    loop {
+        if socket.send(out).await.is_err() {
+            return;
+        }
+        out = loop {
+            tokio::select! {
+                changed = app.state.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break to_text(&ServerMsg::State(&app.state.borrow_and_update()));
+                }
+                msg = socket.recv() => {
+                    let Some(Ok(msg)) = msg else { return };
+                    let Message::Text(text) = msg else { continue };
+                    if let Err(message) = handle(&app, &text).await {
+                        break to_text(&ServerMsg::Error { message });
+                    }
+                }
+            }
+        };
+    }
+}
+
+async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
+    let cmd = match serde_json::from_str(text).map_err(|_| "Unknown command")? {
+        ClientMsg::Add { url } => {
+            state::Command::Add(youtube::video_id(&url).ok_or("That is not a YouTube video link")?)
+        }
+    };
+    app.commands
+        .send(cmd)
+        .await
+        .map_err(|_| "Server is shutting down")
+}
+
+fn to_text(msg: &ServerMsg) -> Message {
+    Message::text(serde_json::to_string(msg).expect("serializable"))
 }
 
 async fn static_file(uri: Uri) -> Response {

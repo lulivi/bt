@@ -49,3 +49,83 @@ setInterval(() => {
     scheduleReconnect();
   }
 }, 1000);
+
+// --- Shared state over a WebSocket; the server sends the full state on every change. ---
+const nowEl = document.getElementById("now");
+const queueEl = document.getElementById("queue");
+const errorEl = document.getElementById("error");
+const wsStatus = document.getElementById("ws-status");
+const urlInput = document.getElementById("url");
+
+let ws = null;
+let wsBackoff = 1000;
+let wsTimer = null;
+
+function connectWs() {
+  clearTimeout(wsTimer);
+  wsTimer = null;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(proto + "//" + location.host + "/ws");
+  ws.onopen = () => {
+    wsBackoff = 1000;
+    wsStatus.textContent = "";
+  };
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "state") render(msg);
+    else if (msg.type === "error") errorEl.textContent = msg.message;
+  };
+  ws.onclose = () => {
+    wsStatus.textContent = "Reconnecting…";
+    wsTimer = setTimeout(connectWs, wsBackoff);
+    wsBackoff = Math.min(wsBackoff * 2, 30000);
+  };
+}
+
+function send(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return "";
+  const s = Math.round(seconds);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function render(state) {
+  const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
+  nowEl.textContent = current ? current.title : "Nothing";
+  queueEl.replaceChildren(
+    ...state.queue.map((entry, i) => {
+      const li = document.createElement("li");
+      li.className = "status-" + entry.status;
+      if (i === state.currentIndex) {
+        li.classList.add("current");
+        li.setAttribute("aria-current", "true");
+      }
+      const title = document.createElement("span");
+      title.className = "title";
+      title.textContent = entry.title;
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = [formatDuration(entry.duration), entry.status].filter(Boolean).join(" · ");
+      li.append(title, meta);
+      return li;
+    }),
+  );
+}
+
+document.getElementById("add").addEventListener("submit", (event) => {
+  event.preventDefault();
+  errorEl.textContent = "";
+  send({ type: "add", url: urlInput.value });
+  urlInput.value = "";
+});
+
+// A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (!ws || ws.readyState === WebSocket.CLOSED) connectWs();
+});
+
+connectWs();
