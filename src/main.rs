@@ -28,6 +28,7 @@ struct App {
     mp3: broadcast::Sender<radio::Chunk>,
     commands: mpsc::Sender<state::Command>,
     state: watch::Receiver<state::State>,
+    clock: radio::Clock,
 }
 
 #[tokio::main]
@@ -48,8 +49,8 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("creating {}", config.cache_dir.display()))?;
 
     let (ended_tx, ended_rx) = mpsc::unbounded_channel();
-    let (mp3, deck) = radio::start(&config.ffmpeg, ended_tx)?;
-    let (commands, state) = state::spawn(config, deck, ended_rx);
+    let (mp3, deck, clock) = radio::start(&config.ffmpeg, ended_tx)?;
+    let (commands, state) = state::spawn(config, deck, clock.clone(), ended_rx);
 
     let app = Router::new()
         .route("/stream", get(stream_mp3))
@@ -59,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
             mp3,
             commands,
             state,
+            clock,
         });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -98,8 +100,15 @@ enum ClientMsg {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerMsg<'a> {
-    State(&'a state::State),
-    Error { message: &'a str },
+    /// The full State, plus the stream time now so clients can follow the stream clock.
+    State {
+        clock: f64,
+        #[serde(flatten)]
+        state: &'a state::State,
+    },
+    Error {
+        message: &'a str,
+    },
 }
 
 async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
@@ -111,7 +120,7 @@ async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
 /// One Listener's WebSocket: the full State on connect and on every change; commands in.
 async fn listener(mut socket: WebSocket, mut app: App) {
     // `changed()` never fires for the value already there, so send it first.
-    let mut out = to_text(&ServerMsg::State(&app.state.borrow_and_update()));
+    let mut out = state_msg(&mut app);
     loop {
         if socket.send(out).await.is_err() {
             return;
@@ -122,7 +131,7 @@ async fn listener(mut socket: WebSocket, mut app: App) {
                     if changed.is_err() {
                         return;
                     }
-                    break to_text(&ServerMsg::State(&app.state.borrow_and_update()));
+                    break state_msg(&mut app);
                 }
                 msg = socket.recv() => {
                     let Some(Ok(msg)) = msg else { return };
@@ -150,6 +159,13 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         .send(cmd)
         .await
         .map_err(|_| "Server is shutting down")
+}
+
+fn state_msg(app: &mut App) -> Message {
+    to_text(&ServerMsg::State {
+        clock: app.clock.now(),
+        state: &app.state.borrow_and_update(),
+    })
 }
 
 fn to_text(msg: &ServerMsg) -> Message {

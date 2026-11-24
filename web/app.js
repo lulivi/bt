@@ -11,8 +11,24 @@ let retryTimer = null;
 let lastTime = -1;
 let lastProgress = Date.now();
 
+// --- Stream time: the server counts how much audio it has broadcast. Each state message
+// carries that clock, so we know which moment of the broadcast we are hearing. ---
+// How far the first audio of a new connection is behind the moment we asked for it
+// (encoder and network). Tune if the old Song bleeds after a jump (raise) or the new
+// Song's start is cut (lower).
+const STREAM_LATENCY = 0.15;
+let clockOffset = null; // server stream time minus local time, in seconds
+let streamRequestedAt = null; // local time the current stream was requested
+
+/** The stream time this Listener is hearing now, or null while unknown. */
+function hearing() {
+  if (clockOffset === null || streamRequestedAt === null) return null;
+  return streamRequestedAt + clockOffset - STREAM_LATENCY + audio.currentTime;
+}
+
 function startStream(fresh) {
   audio.src = fresh ? "/stream?t=" + Date.now() : "/stream";
+  streamRequestedAt = performance.now() / 1000;
   lastProgress = Date.now();
   audio.play().catch(() => {});
 }
@@ -110,7 +126,45 @@ const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
 let playing = true;
-let lastJump = null;
+let lastJumpAt; // undefined until the first state
+// After a next/prev, the buffer still holds the old Song: stay muted until our playback
+// reaches the stream time of the jump, so the change is heard cleanly and in sync.
+let holdUntil = null;
+let holdSince = 0;
+
+function applyMute() {
+  audio.muted = !playing || holdUntil !== null;
+}
+
+function jumpTo(at) {
+  const now = hearing();
+  // Hidden (locked phone): timers are throttled, so just skip ahead and accept the overlap.
+  if (now === null || document.visibilityState !== "visible") return goLive();
+  holdUntil = at;
+  holdSince = Date.now();
+  // Skip the old audio as far as it is already buffered.
+  const b = audio.buffered;
+  if (b.length === 0) return;
+  const target = Math.min(audio.currentTime + (at - now), b.end(b.length - 1) - LAG_FLOOR);
+  if (target > audio.currentTime + 0.2) {
+    try {
+      audio.currentTime = target;
+      lagReadings = [];
+    } catch {
+      // Not seekable: the hold still keeps the old Song quiet.
+    }
+  }
+}
+
+setInterval(() => {
+  if (holdUntil === null) return;
+  const now = hearing();
+  // Give up after 5 s so a wrong estimate can never leave us muted.
+  if ((now !== null && now >= holdUntil) || Date.now() - holdSince > 5000) {
+    holdUntil = null;
+    applyMute();
+  }
+}, 50);
 
 let ws = null;
 let wsBackoff = 1000;
@@ -127,7 +181,10 @@ function connectWs() {
   };
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    if (msg.type === "state") render(msg);
+    if (msg.type === "state") {
+      clockOffset = msg.clock - performance.now() / 1000;
+      render(msg);
+    }
     else if (msg.type === "error") errorEl.textContent = msg.message;
   };
   ws.onclose = () => {
@@ -151,13 +208,14 @@ function render(state) {
   const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
   nowEl.textContent = current ? current.title : "Nothing";
   // Pause is heard instantly by muting (never pausing: a locked phone would drop the audio
-  // session); resuming or jumping skips the buffered audio.
+  // session); resuming skips the buffered silence, a jump mutes until the new Song.
   const resumed = state.playing && !playing;
-  const jumped = lastJump !== null && state.jump !== lastJump;
+  const jumped = lastJumpAt !== undefined && state.jumpAt !== lastJumpAt;
   playing = state.playing;
-  lastJump = state.jump;
-  audio.muted = !playing;
-  if (resumed || jumped) goLive();
+  lastJumpAt = state.jumpAt;
+  if (jumped && wantAudio) jumpTo(state.jumpAt);
+  else if (resumed) goLive();
+  applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
   queueEl.replaceChildren(

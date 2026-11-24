@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
-use crate::radio::{Deck, Decoder};
+use crate::radio::{Clock, Deck, Decoder};
 use crate::youtube;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -18,9 +18,9 @@ pub struct State {
     pub queue: Vec<Entry>,
     pub current_index: Option<usize>,
     pub playing: bool,
-    /// Bumped whenever a Listener moves playback (next/prev), so every client can drop its
-    /// buffered audio and jump to the live edge instead of hearing the change late.
-    pub jump: u64,
+    /// Stream time of the last next/prev. Clients mute their buffered (old) audio until their
+    /// playback reaches it, so the change is heard cleanly and in sync.
+    pub jump_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -71,6 +71,7 @@ pub struct Config {
 pub fn spawn(
     config: Config,
     deck: Arc<Mutex<Deck>>,
+    clock: Clock,
     mut ended: mpsc::UnboundedReceiver<Uuid>,
 ) -> (mpsc::Sender<Command>, watch::Receiver<State>) {
     let (cmd_tx, mut commands) = mpsc::channel(64);
@@ -86,6 +87,7 @@ pub fn spawn(
         state: state_tx.borrow().clone(),
         ffmpeg: config.ffmpeg,
         deck,
+        clock,
     };
     tokio::spawn(async move {
         loop {
@@ -100,13 +102,13 @@ pub fn spawn(
                     Command::Next => {
                         let target = next(&ready(&actor.state.queue), actor.state.current_index);
                         actor.load(target);
-                        actor.state.jump += 1;
+                        actor.state.jump_at = Some(actor.clock.now());
                     }
                     Command::Prev => {
                         let target =
                             prev(&ready(&actor.state.queue), actor.state.current_index, actor.played());
                         actor.load(target);
-                        actor.state.jump += 1;
+                        actor.state.jump_at = Some(actor.clock.now());
                     }
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
@@ -151,6 +153,7 @@ struct Actor {
     state: State,
     ffmpeg: String,
     deck: Arc<Mutex<Deck>>,
+    clock: Clock,
 }
 
 impl Actor {

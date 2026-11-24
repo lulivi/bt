@@ -4,6 +4,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +22,18 @@ const TICK: Duration = Duration::from_millis(20);
 const TICK_BYTES: usize = 3528;
 /// Decoded PCM buffered ahead of the mixer, in ticks (5 s).
 const DECODER_BUFFER: usize = 250;
+
+/// Stream time: how much audio the Radio has broadcast since it started, counted by the
+/// mixer. Listeners use it to find a moment (like a jump) in their own copy of the stream.
+#[derive(Clone, Default)]
+pub struct Clock(Arc<AtomicU64>);
+
+impl Clock {
+    /// Stream time in seconds.
+    pub fn now(&self) -> f64 {
+        (self.0.load(Ordering::Relaxed) * TICK.as_millis() as u64) as f64 / 1000.0
+    }
+}
 
 /// What the mixer plays. Owned by the state actor, read by the mixer every tick.
 #[derive(Default)]
@@ -92,12 +105,13 @@ impl Drop for Decoder {
     }
 }
 
-/// Starts the encoder and the mixer. Returns the MP3 broadcast and the deck the mixer plays;
+/// Starts the encoder and the mixer. Returns the MP3 broadcast, the deck the mixer plays and
+/// the stream clock;
 /// when the current decoder runs out, the mixer sends its Entry's uid on `ended`.
 pub fn start(
     ffmpeg: &str,
     ended: mpsc::UnboundedSender<Uuid>,
-) -> anyhow::Result<(broadcast::Sender<Chunk>, Arc<Mutex<Deck>>)> {
+) -> anyhow::Result<(broadcast::Sender<Chunk>, Arc<Mutex<Deck>>, Clock)> {
     let mut encoder = Command::new(ffmpeg)
         .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
         .args(["-f", "s16le", "-ar", "44100", "-ac", "2", "-i", "pipe:0"])
@@ -133,6 +147,8 @@ pub fn start(
 
     let deck = Arc::new(Mutex::new(Deck::default()));
     let mixer_deck = deck.clone();
+    let clock = Clock::default();
+    let ticks = clock.0.clone();
     thread::Builder::new().name("mixer".into()).spawn(move || {
         let silence = vec![0u8; TICK_BYTES];
         let start = Instant::now();
@@ -144,6 +160,7 @@ pub fn start(
             {
                 break; // the encoder thread reports and exits
             }
+            ticks.store(n.into(), Ordering::Relaxed);
             // Aim at absolute instants so scheduling jitter never accumulates.
             let target = start + TICK * n;
             if let Some(wait) = target.checked_duration_since(Instant::now()) {
@@ -152,7 +169,7 @@ pub fn start(
         }
     })?;
 
-    Ok((tx, deck))
+    Ok((tx, deck, clock))
 }
 
 /// The PCM for this tick, or `None` for silence (paused, idle, or the decoder lagging).
