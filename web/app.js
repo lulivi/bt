@@ -77,7 +77,6 @@ const LAG_CATCH_UP = 0.8; // seconds of delay above which we play faster
 const LAG_JUMP = 4; // seconds of delay above which we jump to the live edge
 const CATCH_UP_RATE = 1.1;
 const LAG_WINDOW = 4000; // ms of readings the delay is taken over
-const lagEl = document.getElementById("lag");
 let lagReadings = [];
 
 setInterval(() => {
@@ -100,7 +99,6 @@ setInterval(() => {
   if (ahead < LAG_FLOOR) audio.playbackRate = 1;
   else if (delay > LAG_CATCH_UP) audio.playbackRate = CATCH_UP_RATE;
   else audio.playbackRate = 1;
-  lagEl.textContent = "Delay: " + delay.toFixed(1) + " s";
 }, 250);
 
 // Drop whatever is buffered and play from the live edge, so a change on the Radio is heard
