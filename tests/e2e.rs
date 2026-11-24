@@ -216,3 +216,43 @@ async fn invalid_links_are_rejected_without_running_anything() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(!bt.ytdlp_log().exists(), "yt-dlp was called");
 }
+
+#[tokio::test]
+async fn controls_change_playback_for_everyone() {
+    // Long Songs, so nothing ends on its own during the test.
+    let bt = Bt::start(60);
+    let mut ws = bt.ws().await;
+    let mut friend = bt.ws().await;
+    ws.recv().await;
+    friend.recv().await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    ws.until("all ready", |s| (0..3).all(|i| status(s, i) == "ready"))
+        .await;
+    friend
+        .until("the first playing", |s| s["currentIndex"] == 0)
+        .await;
+
+    ws.send(json!({"type": "pause"})).await;
+    friend.until("paused", |s| s["playing"] == false).await;
+    ws.send(json!({"type": "play"})).await;
+    friend.until("playing", |s| s["playing"] == true).await;
+
+    ws.send(json!({"type": "next"})).await;
+    friend.until("next", |s| s["currentIndex"] == 1).await;
+    ws.send(json!({"type": "next"})).await;
+    friend.until("next", |s| s["currentIndex"] == 2).await;
+    ws.send(json!({"type": "next"})).await;
+    friend
+        .until("wrap to first", |s| s["currentIndex"] == 0)
+        .await;
+    // Just started, so prev goes back, wrapping to the last.
+    ws.send(json!({"type": "prev"})).await;
+    friend
+        .until("wrap to last", |s| s["currentIndex"] == 2)
+        .await;
+    ws.send(json!({"type": "prev"})).await;
+    let back = friend.until("prev", |s| s["currentIndex"] == 1).await;
+    assert_eq!(back["playing"], true);
+}

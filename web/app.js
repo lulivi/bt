@@ -56,6 +56,8 @@ const queueEl = document.getElementById("queue");
 const errorEl = document.getElementById("error");
 const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
+const toggleBtn = document.getElementById("toggle");
+let playing = true;
 
 let ws = null;
 let wsBackoff = 1000;
@@ -95,6 +97,9 @@ function formatDuration(seconds) {
 function render(state) {
   const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
   nowEl.textContent = current ? current.title : "Nothing";
+  playing = state.playing;
+  toggleBtn.textContent = playing ? "⏸" : "▶";
+  toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
   queueEl.replaceChildren(
     ...state.queue.map((entry, i) => {
       const li = document.createElement("li");
@@ -121,6 +126,12 @@ document.getElementById("add").addEventListener("submit", (event) => {
   send({ type: "add", url: urlInput.value });
   urlInput.value = "";
 });
+
+// Controls change the shared Radio for everyone. They never touch the local <audio>:
+// pausing it would desync this Listener and let a locked phone drop the audio session.
+toggleBtn.addEventListener("click", () => send({ type: playing ? "pause" : "play" }));
+document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
+document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
 document.addEventListener("visibilitychange", () => {

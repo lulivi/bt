@@ -89,6 +89,10 @@ async fn stream_mp3(State(app): State<App>) -> Response {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMsg {
     Add { url: String },
+    Play,
+    Pause,
+    Next,
+    Prev,
 }
 
 #[derive(Serialize)]
@@ -137,6 +141,10 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Add { url } => {
             state::Command::Add(youtube::video_id(&url).ok_or("That is not a YouTube video link")?)
         }
+        ClientMsg::Play => state::Command::Play,
+        ClientMsg::Pause => state::Command::Pause,
+        ClientMsg::Next => state::Command::Next,
+        ClientMsg::Prev => state::Command::Prev,
     };
     app.commands
         .send(cmd)

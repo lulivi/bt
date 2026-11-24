@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
@@ -44,6 +45,10 @@ pub enum Status {
 pub enum Command {
     /// Append a Song; the ID is already validated.
     Add(String),
+    Play,
+    Pause,
+    Next,
+    Prev,
 }
 
 /// What the yt-dlp worker reports back.
@@ -86,6 +91,17 @@ pub fn spawn(
                     Command::Add(video_id) => {
                         let uid = actor.add(video_id.clone());
                         _ = job_tx.send((uid, video_id));
+                    }
+                    Command::Play => actor.set_playing(true),
+                    Command::Pause => actor.set_playing(false),
+                    Command::Next => {
+                        let target = next(&ready(&actor.state.queue), actor.state.current_index);
+                        actor.load(target);
+                    }
+                    Command::Prev => {
+                        let target =
+                            prev(&ready(&actor.state.queue), actor.state.current_index, actor.played());
+                        actor.load(target);
                     }
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
@@ -172,6 +188,17 @@ impl Actor {
         }
     }
 
+    /// Pausing makes the mixer send silence; the decoder waits where it was.
+    fn set_playing(&mut self, playing: bool) {
+        self.state.playing = playing;
+        self.deck.lock().unwrap().playing = playing;
+    }
+
+    fn played(&self) -> Duration {
+        let deck = self.deck.lock().unwrap();
+        deck.decoder.as_ref().map_or(Duration::ZERO, |d| d.played())
+    }
+
     /// The mixer finished an Entry: move on to the next ready one, or go idle.
     fn ended(&mut self, uid: Uuid) {
         let Some(current) = self.state.current_index else {
@@ -209,4 +236,84 @@ fn ready(queue: &[Entry]) -> Vec<bool> {
 /// The first ready Entry after `current`, without wrapping (the Queue ending on its own).
 fn after(ready: &[bool], current: usize) -> Option<usize> {
     (current + 1..ready.len()).find(|&i| ready[i])
+}
+
+/// `next`: the following ready Entry, wrapping to the first; from idle, the first ready one.
+/// With only the current Entry ready, that one restarts.
+fn next(ready: &[bool], current: Option<usize>) -> Option<usize> {
+    let n = ready.len();
+    match current {
+        None => ready.iter().position(|&r| r),
+        Some(i) => (1..=n).map(|k| (i + k) % n).find(|&j| ready[j]),
+    }
+}
+
+/// How long the Current entry must have played before `prev` restarts it instead.
+const RESTART_AFTER: Duration = Duration::from_secs(3);
+
+/// `prev`: past [`RESTART_AFTER`], restart the Current entry; before it, the preceding ready
+/// Entry, wrapping to the last; from idle, the last ready one.
+fn prev(ready: &[bool], current: Option<usize>, played: Duration) -> Option<usize> {
+    let n = ready.len();
+    match current {
+        None => ready.iter().rposition(|&r| r),
+        Some(i) if played > RESTART_AFTER => Some(i),
+        Some(i) => (1..=n).map(|k| (i + n - k) % n).find(|&j| ready[j]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EARLY: Duration = Duration::from_secs(1);
+    const LATE: Duration = Duration::from_secs(4);
+    // Entries 1 and 3 aren't ready (pending, downloading or error).
+    const R: [bool; 5] = [true, false, true, false, true];
+
+    #[test]
+    fn next_skips_unready_and_wraps() {
+        assert_eq!(next(&R, Some(0)), Some(2));
+        assert_eq!(next(&R, Some(2)), Some(4));
+        assert_eq!(next(&R, Some(4)), Some(0));
+        assert_eq!(next(&[true], Some(0)), Some(0));
+        assert_eq!(next(&[false, true, false], Some(1)), Some(1));
+    }
+
+    #[test]
+    fn next_from_idle_plays_the_first_ready() {
+        assert_eq!(next(&R, None), Some(0));
+        assert_eq!(next(&[false, true], None), Some(1));
+        assert_eq!(next(&[false, false], None), None);
+        assert_eq!(next(&[], None), None);
+    }
+
+    #[test]
+    fn prev_early_goes_back_skipping_unready_and_wraps() {
+        assert_eq!(prev(&R, Some(4), EARLY), Some(2));
+        assert_eq!(prev(&R, Some(2), EARLY), Some(0));
+        assert_eq!(prev(&R, Some(0), EARLY), Some(4));
+        assert_eq!(prev(&[true], Some(0), EARLY), Some(0));
+        assert_eq!(prev(&R, Some(2), RESTART_AFTER), Some(0));
+    }
+
+    #[test]
+    fn prev_late_restarts_the_current() {
+        assert_eq!(prev(&R, Some(2), LATE), Some(2));
+        assert_eq!(prev(&R, Some(0), LATE), Some(0));
+    }
+
+    #[test]
+    fn prev_from_idle_plays_the_last_ready() {
+        assert_eq!(prev(&R, None, Duration::ZERO), Some(4));
+        assert_eq!(prev(&[true, false], None, Duration::ZERO), Some(0));
+        assert_eq!(prev(&[false], None, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn the_queue_ending_on_its_own_does_not_wrap() {
+        assert_eq!(after(&R, 0), Some(2));
+        assert_eq!(after(&R, 4), None);
+        assert_eq!(after(&[true, false], 0), None);
+    }
 }

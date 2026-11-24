@@ -34,6 +34,7 @@ pub struct Decoder {
     pub uid: Uuid,
     child: Child,
     pcm: Receiver<Vec<u8>>,
+    played_ticks: u32,
 }
 
 impl Decoder {
@@ -68,7 +69,19 @@ impl Decoder {
                     }
                 }
             })?;
-        Ok(Self { uid, child, pcm })
+        Ok(Self {
+            uid,
+            child,
+            pcm,
+            played_ticks: 0,
+        })
+    }
+}
+
+impl Decoder {
+    /// How much of the Entry has been broadcast.
+    pub fn played(&self) -> Duration {
+        TICK * self.played_ticks
     }
 }
 
@@ -148,7 +161,10 @@ fn next_tick(deck: &mut Deck, ended: &mpsc::UnboundedSender<Uuid>) -> Option<Vec
     }
     let decoder = deck.decoder.as_mut()?;
     match decoder.pcm.try_recv() {
-        Ok(pcm) => Some(pcm),
+        Ok(pcm) => {
+            decoder.played_ticks += 1;
+            Some(pcm)
+        }
         Err(TryRecvError::Empty) => None,
         Err(TryRecvError::Disconnected) => {
             let done = deck.decoder.take().expect("checked above");
