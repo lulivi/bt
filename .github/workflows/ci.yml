@@ -30,3 +30,35 @@ jobs:
           tar -xzf "${tarball}" actionlint
           sudo mv actionlint /usr/local/bin/
       - run: make check
+
+  # The release binaries, on PRs too so a broken target never reaches a release.
+  dist:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: |
+          mkdir dist
+          tar -czf "dist/bt-$TARGET.tar.gz" -C "target/$TARGET/release" bt -C "$GITHUB_WORKSPACE" LICENSE
+          cd dist
+          sha256sum "bt-$TARGET.tar.gz" > "bt-$TARGET.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
