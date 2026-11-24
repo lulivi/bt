@@ -135,8 +135,13 @@ document.getElementById("next").addEventListener("click", () => send({ type: "ne
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
 document.addEventListener("visibilitychange", () => {
+  // The old socket may report OPEN while actually dead, so always replace it.
   if (document.visibilityState !== "visible") return;
-  if (!ws || ws.readyState === WebSocket.CLOSED) connectWs();
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+  }
+  connectWs();
 });
 
 connectWs();

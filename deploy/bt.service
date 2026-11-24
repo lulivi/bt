@@ -1,6 +1,5 @@
 [Unit]
 Description=bt, Better Together shared radio
-After=network-online.target
 
 [Service]
 ExecStart=%h/.local/bin/bt

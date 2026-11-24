@@ -168,7 +168,11 @@ async fn pasted_links_play_in_sequence() {
 
     ws.add("https://www.youtube.com/watch?v=aaaaaaaaaaa").await;
     let pending = ws.until("an entry", |s| s["queue"][0].is_object()).await;
-    assert_eq!(status(&pending, 0), "pending");
+    // `watch` coalesces updates, so a slow run may already show the download.
+    assert!(
+        ["pending", "downloading"].contains(&status(&pending, 0)),
+        "{pending}"
+    );
     assert_eq!(pending["queue"][0]["videoId"], "aaaaaaaaaaa");
     ws.add("https://youtu.be/unavailable").await;
     ws.add("https://youtu.be/bbbbbbbbbbb").await;

@@ -110,8 +110,9 @@ pub fn start(
     let mut pcm_in = encoder.stdin.take().expect("piped stdin");
     let mut mp3_out = encoder.stdout.take().expect("piped stdout");
 
-    // ~256 chunks of ≤4 KiB ≈ 60 s of 128 kbit/s audio of slack before a listener lags.
-    let (tx, _) = broadcast::channel(256);
+    // ffmpeg flushes about one MP3 frame (~420 B) per read, so 2048 chunks ≈ 55 s of
+    // 128 kbit/s audio of slack before a listener counts as lagging and is dropped.
+    let (tx, _) = broadcast::channel(2048);
 
     let sender = tx.clone();
     thread::Builder::new()
