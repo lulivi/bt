@@ -1,0 +1,9 @@
+[workspace]
+# No crates.io: take the last version from git tags, and tag/release publish = false packages.
+git_only = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+# Release only when a release PR is merged, not whenever the version has no tag yet.
+release_always = false
+# The publish job in ci.yml makes it public once the binaries are uploaded.
+git_release_draft = true
