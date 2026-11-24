@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bt — Better Together</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>bt</h1>
+    <button id="connect" class="big">Connect audio</button>
+    <p id="audio-status" role="status"></p>
+    <audio id="radio" preload="none"></audio>
+
+    <section aria-labelledby="now-label">
+      <h2 id="now-label">Now playing</h2>
+      <p id="now">Nothing</p>
+      <div class="controls">
+        <button id="prev" aria-label="Previous">⏮</button>
+        <button id="toggle" aria-label="Pause">⏸</button>
+        <button id="next" aria-label="Next">⏭</button>
+      </div>
+    </section>
+
+    <form id="add">
+      <input id="url" type="url" required placeholder="Paste a YouTube link" aria-label="YouTube link">
+      <button type="submit">Add</button>
+    </form>
+    <p id="error" role="alert"></p>
+
+    <section aria-labelledby="queue-label">
+      <h2 id="queue-label">Queue</h2>
+      <ol id="queue"></ol>
+    </section>
+    <p id="ws-status" role="status"></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
