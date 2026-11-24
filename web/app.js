@@ -87,6 +87,21 @@ setInterval(() => {
   lagEl.textContent = "Delay: " + delay.toFixed(1) + " s";
 }, 250);
 
+// Drop whatever is buffered and play from the live edge, so a change on the Radio is heard
+// now rather than a few seconds late. Every Listener does this, which also syncs them.
+function goLive() {
+  const b = audio.buffered;
+  if (!wantAudio || b.length === 0) return;
+  const target = b.end(b.length - 1) - LAG_FLOOR;
+  if (target - audio.currentTime < 0.2) return;
+  try {
+    audio.currentTime = target;
+    lagReadings = [];
+  } catch {
+    // Not seekable in this browser: the catch-up above still gets there, just slower.
+  }
+}
+
 // --- Shared state over a WebSocket; the server sends the full state on every change. ---
 const nowEl = document.getElementById("now");
 const queueEl = document.getElementById("queue");
@@ -95,6 +110,7 @@ const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
 let playing = true;
+let lastJump = null;
 
 let ws = null;
 let wsBackoff = 1000;
@@ -134,7 +150,14 @@ function formatDuration(seconds) {
 function render(state) {
   const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
   nowEl.textContent = current ? current.title : "Nothing";
+  // Pause is heard instantly by muting (never pausing: a locked phone would drop the audio
+  // session); resuming or jumping skips the buffered audio.
+  const resumed = state.playing && !playing;
+  const jumped = lastJump !== null && state.jump !== lastJump;
   playing = state.playing;
+  lastJump = state.jump;
+  audio.muted = !playing;
+  if (resumed || jumped) goLive();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
   queueEl.replaceChildren(
@@ -166,7 +189,10 @@ document.getElementById("add").addEventListener("submit", (event) => {
 
 // Controls change the shared Radio for everyone. They never touch the local <audio>:
 // pausing it would desync this Listener and let a locked phone drop the audio session.
-toggleBtn.addEventListener("click", () => send({ type: playing ? "pause" : "play" }));
+toggleBtn.addEventListener("click", () => {
+  if (playing) audio.muted = true; // don't wait for the round trip to go quiet
+  send({ type: playing ? "pause" : "play" });
+});
 document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
 document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
 

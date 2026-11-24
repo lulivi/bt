@@ -18,6 +18,9 @@ pub struct State {
     pub queue: Vec<Entry>,
     pub current_index: Option<usize>,
     pub playing: bool,
+    /// Bumped whenever a Listener moves playback (next/prev), so every client can drop its
+    /// buffered audio and jump to the live edge instead of hearing the change late.
+    pub jump: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -97,11 +100,13 @@ pub fn spawn(
                     Command::Next => {
                         let target = next(&ready(&actor.state.queue), actor.state.current_index);
                         actor.load(target);
+                        actor.state.jump += 1;
                     }
                     Command::Prev => {
                         let target =
                             prev(&ready(&actor.state.queue), actor.state.current_index, actor.played());
                         actor.load(target);
+                        actor.state.jump += 1;
                     }
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),

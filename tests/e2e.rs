@@ -165,6 +165,7 @@ async fn pasted_links_play_in_sequence() {
     assert_eq!(first["queue"], json!([]));
     assert_eq!(first["currentIndex"], Value::Null);
     assert_eq!(first["playing"], true);
+    assert_eq!(first["jump"], 0);
 
     ws.add("https://www.youtube.com/watch?v=aaaaaaaaaaa").await;
     let pending = ws.until("an entry", |s| s["queue"][0].is_object()).await;
@@ -244,7 +245,8 @@ async fn controls_change_playback_for_everyone() {
     friend.until("playing", |s| s["playing"] == true).await;
 
     ws.send(json!({"type": "next"})).await;
-    friend.until("next", |s| s["currentIndex"] == 1).await;
+    let moved = friend.until("next", |s| s["currentIndex"] == 1).await;
+    assert_eq!(moved["jump"], 1, "next tells clients to skip their buffer");
     ws.send(json!({"type": "next"})).await;
     friend.until("next", |s| s["currentIndex"] == 2).await;
     ws.send(json!({"type": "next"})).await;
