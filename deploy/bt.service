@@ -1,0 +1,12 @@
+[Unit]
+Description=bt, Better Together shared radio
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/bt
+WorkingDirectory=%h/.local/share/bt
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
