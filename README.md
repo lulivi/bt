@@ -52,6 +52,7 @@ All environment variables are optional.
 |---|---|---|
 | `BT_ADDR` | `127.0.0.1:3000` | Address the app listens on |
 | `BT_CACHE_DIR` | `./cache` | Downloaded audio |
+| `BT_STATE_FILE` | `./state.json` | The queue, saved after every change and restored (paused) on startup |
 | `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
 | `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
 
@@ -70,4 +71,4 @@ make deploy DEPLOY_HOST=<ssh host>   # DEPLOY_TARGET=x86_64-unknown-linux-musl f
 make logs DEPLOY_HOST=<ssh host>
 ```
 
-The service runs from `~/.local/share/bt` (so audio is cached in `~/.local/share/bt/cache`). Set `BT_*` variables with `systemctl --user edit bt`. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `BT_ADDR`.
+The service runs from `~/.local/share/bt` (so audio is cached in `~/.local/share/bt/cache`, and the queue is saved in `~/.local/share/bt/state.json`). Set `BT_*` variables with `systemctl --user edit bt`. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `BT_ADDR`.

@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # Downloaded audio
 cache/
+
+# Saved queue
+state.json*

@@ -16,7 +16,7 @@ const HOSTS: [&str; 4] = [
 
 /// The video ID of a YouTube video link, or `None` for anything else.
 ///
-/// Only an ID matching `^[A-Za-z0-9_-]{11}$` ever leaves this function, so it is safe to pass to
+/// Only an ID passing [`is_video_id`] ever leaves this function, so it is safe to pass to
 /// yt-dlp as an argument (after `--`, since real IDs may start with `-`).
 pub fn video_id(input: &str) -> Option<String> {
     let url = Url::parse(input.trim()).ok()?;
@@ -34,11 +34,15 @@ pub fn video_id(input: &str) -> Option<String> {
         (h, ["shorts", id]) if HOSTS.contains(&h) => (*id).to_string(),
         _ => return None,
     };
-    let valid = id.len() == 11
+    is_video_id(&id).then_some(id)
+}
+
+/// `^[A-Za-z0-9_-]{11}$`
+pub fn is_video_id(id: &str) -> bool {
+    id.len() == 11
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    valid.then_some(id)
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 pub struct Metadata {

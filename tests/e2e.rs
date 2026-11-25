@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ struct Bt {
     child: Child,
     addr: String,
     dir: TempDir,
+    seconds: u32,
 }
 
 impl Drop for Bt {
@@ -29,10 +30,29 @@ impl Bt {
     /// Starts `bt` on a free port with a fresh cache; each fake song lasts `seconds`.
     fn start(seconds: u32) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let (child, addr) = Self::spawn(&dir, seconds);
+        Bt {
+            child,
+            addr,
+            dir,
+            seconds,
+        }
+    }
+
+    /// Kills `bt` and starts it again with the same files; `between` runs while it is down.
+    fn restart(&mut self, between: impl FnOnce(&Path)) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        between(self.dir.path());
+        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds);
+    }
+
+    fn spawn(dir: &TempDir, seconds: u32) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
         let mut child = Command::new(env!("CARGO_BIN_EXE_bt"))
             .env("BT_ADDR", "127.0.0.1:0")
             .env("BT_CACHE_DIR", dir.path().join("cache"))
+            .env("BT_STATE_FILE", dir.path().join("data/state.json"))
             .env("BT_YTDLP", fake)
             .env("FAKE_YTDLP_LOG", dir.path().join("yt-dlp.log"))
             .env("FAKE_YTDLP_SECONDS", seconds.to_string())
@@ -48,11 +68,24 @@ impl Bt {
         };
         // Keep draining the log so bt never blocks on a full pipe.
         std::thread::spawn(move || lines.for_each(drop));
-        Bt { child, addr, dir }
+        (child, addr)
     }
 
     fn ytdlp_log(&self) -> PathBuf {
         self.dir.path().join("yt-dlp.log")
+    }
+
+    /// Waits (up to 15 s) for the state file to match `want`: it is written in the background.
+    async fn saved(&self, what: &str, want: impl Fn(&Value) -> bool) {
+        let path = self.dir.path().join("data/state.json");
+        for _ in 0..300 {
+            let json = std::fs::read(&path).unwrap_or_default();
+            if serde_json::from_slice(&json).is_ok_and(|saved| want(&saved)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for {what} to be saved");
     }
 
     async fn ws(&self) -> Ws {
@@ -267,4 +300,104 @@ async fn controls_change_playback_for_everyone() {
     ws.send(json!({"type": "prev"})).await;
     let back = friend.until("prev", |s| s["currentIndex"] == 1).await;
     assert_eq!(back["playing"], true);
+}
+
+#[tokio::test]
+async fn the_queue_survives_restarts() {
+    let mut bt = Bt::start(60);
+    let mut ws = bt.ws().await;
+    ws.recv().await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb", "unavailable", "ccccccccccc"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    ws.until("all fetched", |s| status(s, 3) == "ready").await;
+    ws.send(json!({"type": "next"})).await;
+    let before = ws.until("next", |s| s["currentIndex"] == 1).await;
+    bt.saved("the second as current", |s| {
+        s["currentIndex"] == 1 && s["queue"][3]["file"].is_string()
+    })
+    .await;
+
+    // All the audio is there: same Queue, same Current entry, paused.
+    bt.restart(|_| ());
+    let mut ws = bt.ws().await;
+    let state = ws.recv().await;
+    assert_eq!(state["currentIndex"], 1);
+    assert_eq!(state["playing"], false);
+    assert_eq!(state["jumpAt"], Value::Null);
+    for i in [0, 1, 3] {
+        assert_eq!(state["queue"][i], before["queue"][i]);
+    }
+    assert!(state["queue"][0].get("file").is_none(), "{state}");
+    // The unavailable one gets another try.
+    if status(&state, 2) != "error" {
+        ws.until("the retry failing", |s| status(s, 2) == "error")
+            .await;
+    }
+    let log = std::fs::read_to_string(bt.ytdlp_log()).unwrap();
+    assert_eq!(log.matches("-J --no-playlist -- unavailable").count(), 2);
+    ws.send(json!({"type": "play"})).await;
+    ws.until("playing", |s| s["playing"] == true).await;
+
+    // Without the first and the current one's audio: both are fetched again, and the first,
+    // ready sooner, doesn't take over.
+    bt.restart(|dir| {
+        std::fs::remove_file(dir.join("cache/aaaaaaaaaaa.wav")).unwrap();
+        std::fs::remove_file(dir.join("cache/bbbbbbbbbbb.wav")).unwrap();
+    });
+    let mut ws = bt.ws().await;
+    let state = ws
+        .until("the current fetched again", |s| {
+            assert_eq!(s["currentIndex"], 1, "{s}");
+            assert_eq!(s["playing"], false, "{s}");
+            status(s, 1) == "ready"
+        })
+        .await;
+    assert_eq!(status(&state, 0), "ready");
+    assert_eq!(state["queue"][1]["uid"], before["queue"][1]["uid"]);
+}
+
+#[tokio::test]
+async fn a_current_entry_that_cannot_be_fetched_again_is_skipped() {
+    let mut bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    ws.recv().await;
+    ws.send(json!({"type": "pause"})).await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    bt.saved("both ready", |s| {
+        s["currentIndex"] == 0 && s["queue"][1]["file"].is_string()
+    })
+    .await;
+    bt.restart(|dir| {
+        // The video was removed meanwhile.
+        std::fs::remove_file(dir.join("cache/aaaaaaaaaaa.wav")).unwrap();
+        let path = dir.join("data/state.json");
+        let json = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, json.replace("aaaaaaaaaaa", "unavailable")).unwrap();
+    });
+    let mut ws = bt.ws().await;
+    let state = ws.until("skipped", |s| s["currentIndex"] == 1).await;
+    assert_eq!(status(&state, 0), "error");
+    assert_eq!(state["playing"], false);
+    // It really plays: the 2 s Song ends and the Radio goes idle.
+    ws.send(json!({"type": "play"})).await;
+    ws.until("idle", |s| s["currentIndex"].is_null()).await;
+}
+
+#[tokio::test]
+async fn a_current_entry_fetched_again_plays() {
+    let mut bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    ws.recv().await;
+    ws.send(json!({"type": "pause"})).await;
+    ws.add("https://youtu.be/aaaaaaaaaaa").await;
+    bt.saved("it ready", |s| s["queue"][0]["file"].is_string())
+        .await;
+    bt.restart(|dir| std::fs::remove_file(dir.join("cache/aaaaaaaaaaa.wav")).unwrap());
+    let mut ws = bt.ws().await;
+    ws.until("fetched again", |s| status(s, 0) == "ready").await;
+    ws.send(json!({"type": "play"})).await;
+    ws.until("its end", |s| s["currentIndex"].is_null()).await;
 }

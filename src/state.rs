@@ -32,7 +32,7 @@ pub struct Entry {
     pub duration: Option<f64>,
     pub status: Status,
     #[serde(skip)]
-    file: Option<PathBuf>,
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -67,28 +67,27 @@ pub struct Config {
     pub cache_dir: PathBuf,
 }
 
-/// Spawns the actor; returns its command inbox and the published State.
+/// Spawns the actor, starting from `state`; returns its command inbox and the published State.
 pub fn spawn(
     config: Config,
+    state: State,
     deck: Arc<Mutex<Deck>>,
     clock: Clock,
     mut ended: mpsc::UnboundedReceiver<Uuid>,
 ) -> (mpsc::Sender<Command>, watch::Receiver<State>) {
     let (cmd_tx, mut commands) = mpsc::channel(64);
-    let (state_tx, state_rx) = watch::channel(State {
-        playing: true,
-        ..State::default()
-    });
     let (fetch_tx, mut fetched) = mpsc::unbounded_channel();
     let (job_tx, jobs) = mpsc::unbounded_channel();
     tokio::spawn(worker(config.ytdlp, config.cache_dir, jobs, fetch_tx));
 
     let mut actor = Actor {
-        state: state_tx.borrow().clone(),
+        state,
         ffmpeg: config.ffmpeg,
         deck,
         clock,
     };
+    actor.resume(&job_tx);
+    let (state_tx, state_rx) = watch::channel(actor.state.clone());
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -157,6 +156,20 @@ struct Actor {
 }
 
 impl Actor {
+    /// Picks up a restored State: fetches what has no audio and loads the Current entry. One
+    /// without audio stays current, and is loaded once fetched.
+    fn resume(&mut self, jobs: &mpsc::UnboundedSender<(Uuid, String)>) {
+        for entry in &self.state.queue {
+            if entry.status == Status::Pending {
+                _ = jobs.send((entry.uid, entry.video_id.clone()));
+            }
+        }
+        let current = self.state.current_index;
+        if current.is_some_and(|i| self.state.queue[i].file.is_some()) {
+            self.load(current);
+        }
+    }
+
     fn add(&mut self, video_id: String) -> Uuid {
         let uid = Uuid::new_v4();
         self.state.queue.push(Entry {
@@ -187,12 +200,22 @@ impl Actor {
             Fetched::Done(_, Ok(file)) => {
                 entry.status = Status::Ready;
                 entry.file = Some(file);
-                if self.state.current_index.is_none() {
+                if self
+                    .state
+                    .current_index
+                    .is_none_or(|current| current == index)
+                {
                     // Idle: this Entry becomes current. Paused, it waits for `play`.
+                    // Already current: it was restored without its audio.
                     self.load(Some(index));
                 }
             }
-            Fetched::Done(_, Err(_)) => entry.status = Status::Error,
+            Fetched::Done(_, Err(_)) => {
+                entry.status = Status::Error;
+                if self.state.current_index == Some(index) {
+                    self.load(after(&ready(&self.state.queue), index));
+                }
+            }
         }
     }
 

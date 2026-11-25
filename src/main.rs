@@ -1,3 +1,4 @@
+mod persist;
 mod radio;
 mod state;
 mod youtube;
@@ -47,10 +48,16 @@ async fn main() -> anyhow::Result<()> {
     };
     std::fs::create_dir_all(&config.cache_dir)
         .with_context(|| format!("creating {}", config.cache_dir.display()))?;
+    let state_file = PathBuf::from(var("BT_STATE_FILE", "state.json"));
+    if let Some(dir) = state_file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let restored = persist::load(&state_file)?;
 
     let (ended_tx, ended_rx) = mpsc::unbounded_channel();
     let (mp3, deck, clock) = radio::start(&config.ffmpeg, ended_tx)?;
-    let (commands, state) = state::spawn(config, deck, clock.clone(), ended_rx);
+    let (commands, state) = state::spawn(config, restored, deck, clock.clone(), ended_rx);
+    tokio::spawn(persist::save_changes(state_file, state.clone()));
 
     let app = Router::new()
         .route("/stream", get(stream_mp3))
