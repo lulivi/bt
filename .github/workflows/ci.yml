@@ -18,7 +18,7 @@ jobs:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -33,3 +33,99 @@ jobs:
           tar -xzf "${tarball}" actionlint
           sudo mv actionlint /usr/local/bin/
       - run: make check
+
+  # The release binaries, on PRs too so a broken target never reaches a release.
+  dist:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: |
+          mkdir dist
+          tar -czf "dist/bt-$TARGET.tar.gz" -C "target/$TARGET/release" bt -C "$GITHUB_WORKSPACE" LICENSE
+          cd dist
+          sha256sum "bt-$TARGET.tar.gz" > "bt-$TARGET.tar.gz.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # Waits for the builds so no release is created without its binaries.
+  release:
+    if: github.event_name == 'push'
+    needs: [check, dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read # finds out whether the commit comes from a release PR
+    outputs:
+      released: ${{ steps.release-plz.outputs.releases_created }}
+      tag: ${{ steps.release-plz.outputs.releases_created == 'true' && fromJSON(steps.release-plz.outputs.releases)[0].tag || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Uploads the binaries dist built, then makes the draft release public.
+  publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - run: gh release upload "$TAG" dist/* --clobber
+      - run: gh release edit "$TAG" --draft=false --latest
+
+  # After release, so a merged release PR is already tagged.
+  release-pr:
+    if: github.event_name == 'push'
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b
+        with:
+          command: release-pr
+        env:
+          # A PAT, so the release PR triggers CI.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
