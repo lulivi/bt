@@ -37,7 +37,9 @@ pub fn video_id(input: &str) -> Option<String> {
     is_video_id(&id).then_some(id)
 }
 
-/// `^[A-Za-z0-9_-]{11}$`
+/// Returns whether `id` is a well-formed video ID: `^[A-Za-z0-9_-]{11}$`.
+///
+/// Such an ID is safe in file names, and as a yt-dlp argument after `--`.
 pub fn is_video_id(id: &str) -> bool {
     id.len() == 11
         && id

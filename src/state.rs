@@ -67,7 +67,10 @@ pub struct Config {
     pub cache_dir: PathBuf,
 }
 
-/// Spawns the actor, starting from `state`; returns its command inbox and the published State.
+/// Spawns the state actor and its yt-dlp worker.
+///
+/// The actor starts from `state`, plays through `deck` and moves on when an Entry's uid arrives
+/// on `ended`. Returns its command inbox and the published [`State`].
 pub fn spawn(
     config: Config,
     state: State,
@@ -148,6 +151,7 @@ async fn worker(
     }
 }
 
+/// The state actor's data: the [`State`] it owns and what it needs to play it.
 struct Actor {
     state: State,
     ffmpeg: String,
@@ -155,9 +159,13 @@ struct Actor {
     clock: Clock,
 }
 
+/// How commands, the worker and the mixer change the [`State`].
 impl Actor {
-    /// Picks up a restored State: fetches what has no audio and loads the Current entry. One
-    /// without audio stays current, and is loaded once fetched.
+    /// Resumes from a restored [`State`].
+    ///
+    /// Sends every pending Entry to the worker through `jobs`, in Queue order, and loads the
+    /// Current entry. If that one has no audio yet, it stays current and [`Actor::fetched`]
+    /// loads it later.
     fn resume(&mut self, jobs: &mpsc::UnboundedSender<(Uuid, String)>) {
         for entry in &self.state.queue {
             if entry.status == Status::Pending {
@@ -183,6 +191,11 @@ impl Actor {
         uid
     }
 
+    /// Applies what the worker reports about an Entry.
+    ///
+    /// An Entry that becomes ready is loaded if the Radio is idle or it already is the Current
+    /// entry (restored without its audio). If the Current entry fails, the Radio moves on to
+    /// the next ready one, or goes idle.
     fn fetched(&mut self, event: Fetched) {
         let uid = match &event {
             Fetched::Metadata(uid, _) | Fetched::Downloading(uid) | Fetched::Done(uid, _) => *uid,
@@ -206,7 +219,6 @@ impl Actor {
                     .is_none_or(|current| current == index)
                 {
                     // Idle: this Entry becomes current. Paused, it waits for `play`.
-                    // Already current: it was restored without its audio.
                     self.load(Some(index));
                 }
             }

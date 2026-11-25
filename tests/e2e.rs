@@ -39,7 +39,9 @@ impl Bt {
         }
     }
 
-    /// Kills `bt` and starts it again with the same files; `between` runs while it is down.
+    /// Kills `bt` and starts it again with the same files.
+    ///
+    /// `between` gets their directory and runs while `bt` is down.
     fn restart(&mut self, between: impl FnOnce(&Path)) {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
@@ -47,6 +49,9 @@ impl Bt {
         (self.child, self.addr) = Self::spawn(&self.dir, self.seconds);
     }
 
+    /// Spawns `bt` with its files in `dir` and waits until it listens.
+    ///
+    /// Returns the process and the address it listens on.
     fn spawn(dir: &TempDir, seconds: u32) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
         let mut child = Command::new(env!("CARGO_BIN_EXE_bt"))
@@ -75,7 +80,13 @@ impl Bt {
         self.dir.path().join("yt-dlp.log")
     }
 
-    /// Waits (up to 15 s) for the state file to match `want`: it is written in the background.
+    /// Waits (up to 15 s) for the state file to match `want`.
+    ///
+    /// The file is written in the background, so it can lag behind the published State.
+    ///
+    /// # Panics
+    ///
+    /// Panics with `what` if it doesn't match in time.
     async fn saved(&self, what: &str, want: impl Fn(&Value) -> bool) {
         let path = self.dir.path().join("data/state.json");
         for _ in 0..300 {

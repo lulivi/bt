@@ -1,4 +1,6 @@
-//! The state file: what survives a restart, written after every change.
+//! The state file: what survives a restart.
+//!
+//! [`load`] reads it on startup and [`save_changes`] rewrites it after every change.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -13,6 +15,10 @@ use uuid::Uuid;
 use crate::state::{Entry, State, Status};
 use crate::youtube;
 
+/// The contents of the state file.
+///
+/// Holds only what can't be worked out again on startup. Missing fields get their default and
+/// unknown ones are ignored, so files from other versions still load.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Saved {
@@ -20,6 +26,10 @@ pub struct Saved {
     current_index: Option<usize>,
 }
 
+/// An [`Entry`] as saved in the state file.
+///
+/// Unlike the [`Entry`] sent to Listeners, it has the audio `file` and no status, which
+/// [`Saved::restore`] derives from that file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedEntry {
@@ -30,6 +40,7 @@ struct SavedEntry {
     file: Option<PathBuf>,
 }
 
+/// Takes the part of a [`State`] that is saved.
 impl From<&State> for Saved {
     fn from(state: &State) -> Self {
         let queue = state.queue.iter().map(|e| SavedEntry {
@@ -46,9 +57,12 @@ impl From<&State> for Saved {
     }
 }
 
+/// Turns saved contents back into a [`State`].
 impl Saved {
-    /// The State to start from. Entries without audio are pending again, and a restored Queue
-    /// starts paused so nothing plays until a Listener asks for it.
+    /// Builds the [`State`] to start from.
+    ///
+    /// Entries whose file `exists` are ready and all others are pending again. A Queue with
+    /// Entries starts paused, so nothing plays until a Listener asks for it.
     fn restore(self, exists: impl Fn(&Path) -> bool) -> State {
         let restored = |e: SavedEntry| {
             let file = e.file.filter(|f| exists(f));
@@ -73,10 +87,15 @@ impl Saved {
     }
 }
 
+/// Parses and validates the contents of a state file.
+///
+/// # Errors
+///
+/// Fails if `json` isn't a valid [`Saved`], a video ID is invalid (IDs become yt-dlp arguments
+/// and file names) or the current index is outside the Queue.
 fn parse(json: &[u8]) -> anyhow::Result<Saved> {
     let saved: Saved = serde_json::from_slice(json)?;
     for e in &saved.queue {
-        // IDs become yt-dlp arguments and file names.
         ensure!(
             youtube::is_video_id(&e.video_id),
             "invalid video ID {:?}",
@@ -89,8 +108,14 @@ fn parse(json: &[u8]) -> anyhow::Result<Saved> {
     Ok(saved)
 }
 
-/// The State saved in `path`, or a fresh one. A file that makes no sense is set aside as
-/// `<path>.bad`; one that can't be read is an error.
+/// Loads the [`State`] saved in `path`.
+///
+/// Returns a fresh one if there is no file, or if its contents are invalid; in that case the
+/// file is moved to `<path>.bad`, replacing any earlier one.
+///
+/// # Errors
+///
+/// Fails if the file exists but can't be read, or is invalid and can't be moved.
 pub fn load(path: &Path) -> anyhow::Result<State> {
     let saved = match fs::read(path) {
         Ok(json) => parse(&json),
@@ -112,8 +137,11 @@ pub fn load(path: &Path) -> anyhow::Result<State> {
     Ok(saved.restore(Path::is_file))
 }
 
-/// Saves every published State. Off the actor, so a slow disk never delays commands; changes
-/// made during a write are saved together by the next one.
+/// Saves the published `states` to `path` until the state actor stops.
+///
+/// Runs apart from the actor, so a slow disk never delays commands. Changes made during a write
+/// are saved together by the next one, and changes to nothing that is saved (like pausing) are
+/// skipped. A failed write is logged and tried again on the next change.
 pub async fn save_changes(path: PathBuf, mut states: watch::Receiver<State>) {
     let mut last = Saved::from(&*states.borrow());
     while states.changed().await.is_ok() {
@@ -131,7 +159,14 @@ pub async fn save_changes(path: PathBuf, mut states: watch::Receiver<State>) {
     }
 }
 
-/// Replaces `path` atomically: a crash leaves the old file or the new one, never half of one.
+/// Replaces the file at `path` with `saved`, atomically.
+///
+/// Writes and syncs `<path>.tmp`, then renames it, so a crash leaves the old file or the new
+/// one, never half of one.
+///
+/// # Errors
+///
+/// Fails if the temporary file can't be written or renamed; `path` is then unchanged.
 fn write(path: &Path, saved: &Saved) -> anyhow::Result<()> {
     let tmp = with_suffix(path, ".tmp");
     let mut file = File::create(&tmp)?;
@@ -142,6 +177,7 @@ fn write(path: &Path, saved: &Saved) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Appends `suffix` to the file name of `path`, keeping its extension.
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = OsString::from(path);
     name.push(suffix);
