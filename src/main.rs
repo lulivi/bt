@@ -90,11 +90,17 @@ async fn stream_mp3(State(app): State<App>) -> Response {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMsg {
-    Add { url: String },
+    Add {
+        url: String,
+    },
     Play,
     Pause,
     Next,
     Prev,
+    #[serde(rename_all = "camelCase")]
+    Seek {
+        position_sec: f64,
+    },
 }
 
 #[derive(Serialize)]
@@ -154,6 +160,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Pause => state::Command::Pause,
         ClientMsg::Next => state::Command::Next,
         ClientMsg::Prev => state::Command::Prev,
+        ClientMsg::Seek { position_sec } => state::Command::Seek(position_sec),
     };
     app.commands
         .send(cmd)

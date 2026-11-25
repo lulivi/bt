@@ -47,13 +47,19 @@ pub struct Decoder {
     pub uid: Uuid,
     child: Child,
     pcm: Receiver<Vec<u8>>,
+    start_at: Duration,
     played_ticks: u32,
 }
 
 impl Decoder {
-    pub fn spawn(ffmpeg: &str, file: &Path, uid: Uuid) -> anyhow::Result<Self> {
-        let mut child = Command::new(ffmpeg)
-            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+    pub fn spawn(ffmpeg: &str, file: &Path, uid: Uuid, start_at: Duration) -> anyhow::Result<Self> {
+        let mut command = Command::new(ffmpeg);
+        command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+        if !start_at.is_zero() {
+            command.args(["-ss", &format!("{:.9}", start_at.as_secs_f64())]);
+        }
+        let mut child = command
+            .arg("-i")
             .arg(file)
             .args(["-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"])
             .stdin(Stdio::null())
@@ -86,15 +92,16 @@ impl Decoder {
             uid,
             child,
             pcm,
+            start_at,
             played_ticks: 0,
         })
     }
 }
 
 impl Decoder {
-    /// How much of the Entry has been broadcast.
+    /// Position in the Entry, including any seek before the decoder started.
     pub fn played(&self) -> Duration {
-        TICK * self.played_ticks
+        self.start_at.saturating_add(TICK * self.played_ticks)
     }
 }
 
