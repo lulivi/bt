@@ -30,9 +30,13 @@ struct Web;
 /// What every request handler shares.
 #[derive(Clone)]
 struct App {
+    /// The MP3 broadcast, to subscribe to.
     mp3: broadcast::Sender<radio::Chunk>,
+    /// The state actor's inbox.
     commands: mpsc::Sender<state::Command>,
+    /// The published State.
     state: watch::Receiver<state::State>,
+    /// Stream time, sent with every State.
     clock: radio::Clock,
 }
 
@@ -110,10 +114,18 @@ async fn stream_mp3(State(app): State<App>) -> Response {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMsg {
-    Add { url: String },
+    /// Append the Song in this link to the Queue.
+    Add {
+        /// The link as pasted, not yet validated.
+        url: String,
+    },
+    /// Resume the Radio.
     Play,
+    /// Silence the Radio.
     Pause,
+    /// Move to the next Entry.
     Next,
+    /// Restart the Current entry or move to the previous one.
     Prev,
 }
 
@@ -123,12 +135,17 @@ enum ClientMsg {
 enum ServerMsg<'a> {
     /// The full State, plus the stream time now so clients can follow the stream clock.
     State {
+        /// Stream time now, in seconds.
         clock: f64,
+        /// The State, its fields inlined in the message.
         #[serde(flatten)]
         state: &'a state::State,
     },
     /// Why the Listener's last message was rejected.
-    Error { message: &'a str },
+    Error {
+        /// The text to show.
+        message: &'a str,
+    },
 }
 
 /// Upgrades a request to a Listener's WebSocket.

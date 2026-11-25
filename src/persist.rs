@@ -22,7 +22,9 @@ use crate::youtube;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Saved {
+    /// The Entries, in order.
     queue: Vec<SavedEntry>,
+    /// Position of the Current entry in `queue`; `None` when idle.
     current_index: Option<usize>,
 }
 
@@ -33,10 +35,15 @@ pub struct Saved {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedEntry {
+    /// Identifies the Entry, across restarts too.
     uid: Uuid,
+    /// The Song; checked by [`parse`].
     video_id: String,
+    /// The Song's title, or its video ID until the metadata is fetched.
     title: String,
+    /// Length in seconds; `None` until known.
     duration: Option<f64>,
+    /// The downloaded audio; `None` until ready.
     file: Option<PathBuf>,
 }
 

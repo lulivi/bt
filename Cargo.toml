@@ -21,3 +21,6 @@ uuid = { version = "1.29.3", features = ["v4", "serde"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio-tungstenite = "0.30.0"
+
+[lints.clippy]
+missing_docs_in_private_items = "warn" # an error in `make check`

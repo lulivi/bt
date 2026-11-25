@@ -18,8 +18,11 @@ use crate::youtube;
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
+    /// The Entries, in order.
     pub queue: Vec<Entry>,
+    /// Position of the Current entry in `queue`; `None` when idle.
     pub current_index: Option<usize>,
+    /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
     /// Stream time of the last next/prev.
     ///
@@ -32,10 +35,15 @@ pub struct State {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
+    /// Identifies the Entry; the same Song can be in several.
     pub uid: Uuid,
+    /// The Song.
     pub video_id: String,
+    /// The Song's title, or its video ID until the metadata is fetched.
     pub title: String,
+    /// Length in seconds; `None` until known.
     pub duration: Option<f64>,
+    /// How far it is from being playable.
     pub status: Status,
     /// The audio to play, once ready; never sent to Listeners.
     #[serde(skip)]
@@ -46,9 +54,13 @@ pub struct Entry {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    /// Waiting for the worker, which a restored Entry without audio does again.
     Pending,
+    /// The metadata is known and the audio is being downloaded.
     Downloading,
+    /// The audio can be played.
     Ready,
+    /// The metadata or audio couldn't be fetched; tried again after a restart.
     Error,
 }
 
@@ -57,23 +69,33 @@ pub enum Status {
 pub enum Command {
     /// Append a Song; the ID is already validated.
     Add(String),
+    /// Resume the Current entry where it was.
     Play,
+    /// Broadcast silence until `Play`.
     Pause,
+    /// Move to the following ready Entry, as in [`next`].
     Next,
+    /// Restart the Current entry or move to the preceding ready one, as in [`prev`].
     Prev,
 }
 
 /// What the yt-dlp worker reports back.
 enum Fetched {
+    /// The metadata of the Entry with this uid.
     Metadata(Uuid, youtube::Metadata),
+    /// The Entry's audio is being downloaded.
     Downloading(Uuid),
+    /// The Entry's audio file, or why it couldn't be fetched.
     Done(Uuid, anyhow::Result<PathBuf>),
 }
 
 /// The programs and the directory the actor uses.
 pub struct Config {
+    /// The ffmpeg binary.
     pub ffmpeg: String,
+    /// The yt-dlp binary.
     pub ytdlp: String,
+    /// Where audio is downloaded.
     pub cache_dir: PathBuf,
 }
 
@@ -165,9 +187,13 @@ async fn worker(
 
 /// The state actor's data: the [`State`] it owns and what it needs to play it.
 struct Actor {
+    /// The current State, published after every command or event.
     state: State,
+    /// The ffmpeg binary.
     ffmpeg: String,
+    /// What the mixer plays, shared with it.
     deck: Arc<Mutex<Deck>>,
+    /// Stream time, to record jumps.
     clock: Clock,
 }
 

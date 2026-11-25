@@ -46,7 +46,9 @@ impl Clock {
 /// Set by the state actor and read by the mixer every tick.
 #[derive(Default)]
 pub struct Deck {
+    /// Decodes the Current entry; `None` when idle or it has no audio.
     pub decoder: Option<Decoder>,
+    /// Whether the mixer plays the decoder; otherwise it sends silence.
     pub playing: bool,
 }
 
@@ -54,9 +56,13 @@ pub struct Deck {
 ///
 /// The PCM is read ahead into a bounded buffer.
 pub struct Decoder {
+    /// The Entry being decoded.
     pub uid: Uuid,
+    /// The ffmpeg process.
     child: Child,
+    /// The decoded audio, one [`TICK`] per item.
     pcm: Receiver<Vec<u8>>,
+    /// How many ticks have been broadcast.
     played_ticks: u32,
 }
 

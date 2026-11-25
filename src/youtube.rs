@@ -52,7 +52,9 @@ pub fn is_video_id(id: &str) -> bool {
 
 /// What yt-dlp knows about a Song.
 pub struct Metadata {
+    /// The video's title.
     pub title: String,
+    /// Length in seconds, if yt-dlp reports it.
     pub duration: Option<f64>,
 }
 
