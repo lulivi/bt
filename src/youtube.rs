@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! Everything YouTube: turning pasted links into video IDs, and running yt-dlp on those IDs.
 
 use std::path::{Path, PathBuf};

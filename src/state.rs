@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! The state actor.
 //!
 //! One task owns the Queue, applies commands one at a time and publishes every new State. It

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! bt, a shared radio: the web server, its configuration and the Listeners' connections.
 
 mod persist;

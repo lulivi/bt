@@ -56,6 +56,19 @@ All environment variables are optional.
 | `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
 | `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
 
+### Download a release
+
+The [latest release](https://github.com/lulivi/bt/releases/latest) has static Linux binaries for `x86_64` and `aarch64`. They need `ffmpeg`, `yt-dlp` and `deno` in `PATH` (see [Requirements](#requirements)).
+
+```sh
+target=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl
+url=https://github.com/lulivi/bt/releases/latest/download
+curl -fLO "$url/bt-$target.tar.gz" -fLO "$url/bt-$target.tar.gz.sha256"
+sha256sum -c "bt-$target.tar.gz.sha256"
+tar -xzf "bt-$target.tar.gz" bt
+./bt   # then open http://localhost:3000 and press "Connect audio"
+```
+
 ### Deploy
 
 `make deploy` cross-compiles a static binary and installs it on any Linux host over SSH as a systemd **user** service (`deploy/bt.service`).

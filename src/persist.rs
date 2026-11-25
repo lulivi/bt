@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! The state file: what survives a restart.
 //!
 //! [`load`] reads it on startup and [`save_changes`] rewrites it after every change.

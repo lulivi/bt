@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! End-to-end tests: run the real `bt` binary with real ffmpeg and `tests/fake-yt-dlp.sh`.
 
 use std::fs::File;
