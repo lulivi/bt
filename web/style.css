@@ -53,6 +53,14 @@ input {
 #queue .status-error .title {
   text-decoration: line-through;
 }
+#playback-progress {
+  margin-bottom: 1rem;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+#track-progress {
+  width: 100%;
+}
 .controls {
   display: flex;
   gap: 0.5rem;

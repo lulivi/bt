@@ -162,9 +162,10 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
 }
 
 fn state_msg(app: &mut App) -> Message {
+    let state = app.state.borrow_and_update();
     to_text(&ServerMsg::State {
         clock: app.clock.now(),
-        state: &app.state.borrow_and_update(),
+        state: &state,
     })
 }
 
