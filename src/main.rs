@@ -1,3 +1,5 @@
+//! bt, a shared radio: the web server, its configuration and the Listeners' connections.
+
 mod persist;
 mod radio;
 mod state;
@@ -20,10 +22,12 @@ use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
 
+/// The web page, embedded in the binary.
 #[derive(Embed)]
 #[folder = "web/"]
 struct Web;
 
+/// What every request handler shares.
 #[derive(Clone)]
 struct App {
     mp3: broadcast::Sender<radio::Chunk>,
@@ -32,6 +36,12 @@ struct App {
     clock: radio::Clock,
 }
 
+/// Starts the Radio, the state actor and the web server, configured by the `BT_*` variables.
+///
+/// # Errors
+///
+/// Fails if the configuration is invalid, the files can't be set up, ffmpeg doesn't start or the
+/// address can't be bound.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -77,7 +87,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The endless MP3 broadcast. `Range` is ignored on purpose: there is no length to satisfy.
+/// Serves the endless MP3 broadcast.
+///
+/// `Range` is ignored on purpose: there is no length to satisfy.
 async fn stream_mp3(State(app): State<App>) -> Response {
     // A listener that falls behind the broadcast (`Lagged`) is dropped; it reconnects on its own.
     let chunks = stream::unfold(app.mp3.subscribe(), |mut rx| async move {
@@ -94,6 +106,7 @@ async fn stream_mp3(State(app): State<App>) -> Response {
         .into_response()
 }
 
+/// A message from a Listener.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMsg {
@@ -104,6 +117,7 @@ enum ClientMsg {
     Prev,
 }
 
+/// A message to a Listener.
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerMsg<'a> {
@@ -113,18 +127,23 @@ enum ServerMsg<'a> {
         #[serde(flatten)]
         state: &'a state::State,
     },
-    Error {
-        message: &'a str,
-    },
+    /// Why the Listener's last message was rejected.
+    Error { message: &'a str },
 }
 
+/// Upgrades a request to a Listener's WebSocket.
+///
+/// Messages over 4 KB are refused.
 async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
     upgrade
         .max_message_size(4096)
         .on_upgrade(|socket| listener(socket, app))
 }
 
-/// One Listener's WebSocket: the full State on connect and on every change; commands in.
+/// Serves one Listener's WebSocket until it closes.
+///
+/// Sends the full State on connect and on every change, and handles the messages received.
+/// Errors go to this Listener only.
 async fn listener(mut socket: WebSocket, mut app: App) {
     // `changed()` never fires for the value already there, so send it first.
     let mut out = state_msg(&mut app);
@@ -152,6 +171,12 @@ async fn listener(mut socket: WebSocket, mut app: App) {
     }
 }
 
+/// Handles one message from a Listener, sending its command to the state actor.
+///
+/// # Errors
+///
+/// Returns the text to show the Listener if the message is unknown, the link isn't a YouTube
+/// video or the server is shutting down.
 async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
     let cmd = match serde_json::from_str(text).map_err(|_| "Unknown command")? {
         ClientMsg::Add { url } => {
@@ -168,6 +193,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         .map_err(|_| "Server is shutting down")
 }
 
+/// Builds the message with the current State, marking it as seen.
 fn state_msg(app: &mut App) -> Message {
     to_text(&ServerMsg::State {
         clock: app.clock.now(),
@@ -175,10 +201,16 @@ fn state_msg(app: &mut App) -> Message {
     })
 }
 
+/// Serializes `msg` as a WebSocket text message.
+///
+/// # Panics
+///
+/// Panics if `msg` can't be serialized, which none of its variants cause.
 fn to_text(msg: &ServerMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("serializable"))
 }
 
+/// Serves a file of the embedded web page, or 404.
 async fn static_file(uri: Uri) -> Response {
     let path = match uri.path().trim_start_matches('/') {
         "" => "index.html",

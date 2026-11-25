@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-/// A running `bt`, killed on drop.
+/// A running `bt` and its files, killed on drop.
 struct Bt {
     child: Child,
     addr: String,
@@ -19,6 +19,7 @@ struct Bt {
     seconds: u32,
 }
 
+/// Kills `bt`.
 impl Drop for Bt {
     fn drop(&mut self) {
         _ = self.child.kill();
@@ -26,8 +27,11 @@ impl Drop for Bt {
     }
 }
 
+/// Starts, stops and inspects `bt`.
 impl Bt {
-    /// Starts `bt` on a free port with a fresh cache; each fake song lasts `seconds`.
+    /// Starts `bt` on a free port, with a fresh cache and state file.
+    ///
+    /// Each fake Song lasts `seconds`.
     fn start(seconds: u32) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (child, addr) = Self::spawn(&dir, seconds);
@@ -76,6 +80,7 @@ impl Bt {
         (child, addr)
     }
 
+    /// Returns the file where the fake yt-dlp logs its calls.
     fn ytdlp_log(&self) -> PathBuf {
         self.dir.path().join("yt-dlp.log")
     }
@@ -99,6 +104,7 @@ impl Bt {
         panic!("timed out waiting for {what} to be saved");
     }
 
+    /// Connects a new Listener.
     async fn ws(&self) -> Ws {
         let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", self.addr))
             .await
@@ -107,15 +113,19 @@ impl Bt {
     }
 }
 
+/// A Listener's WebSocket.
 struct Ws(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 );
 
+/// Sends commands and waits for messages.
 impl Ws {
+    /// Sends `msg` as JSON.
     async fn send(&mut self, msg: Value) {
         self.0.send(Message::text(msg.to_string())).await.unwrap();
     }
 
+    /// Waits for the next message.
     async fn recv(&mut self) -> Value {
         loop {
             let msg = self.0.next().await.expect("ws closed").expect("ws error");
@@ -125,7 +135,11 @@ impl Ws {
         }
     }
 
-    /// Waits (up to 15 s) for a message matching `want`, returning it.
+    /// Waits (up to 15 s) for a message matching `want` and returns it.
+    ///
+    /// # Panics
+    ///
+    /// Panics with `what` if none arrives in time.
     async fn until(&mut self, what: &str, want: impl Fn(&Value) -> bool) -> Value {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
@@ -139,16 +153,20 @@ impl Ws {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
     }
 
+    /// Adds the link `url` to the Queue.
     async fn add(&mut self, url: &str) {
         self.send(json!({"type": "add", "url": url})).await;
     }
 }
 
+/// Returns the status of the Entry `i`, or an empty string if there is none.
 fn status(state: &Value, i: usize) -> &str {
     state["queue"][i]["status"].as_str().unwrap_or_default()
 }
 
-/// Splits a raw HTTP response into its lower-cased header block and the body bytes read so far.
+/// Requests `path` and reads at least `body_bytes` of the response's body.
+///
+/// Returns the lower-cased header block and the body bytes read so far.
 fn get(addr: &str, path: &str, body_bytes: usize) -> (String, Vec<u8>) {
     let mut tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
