@@ -1,5 +1,6 @@
 //! End-to-end tests: run the real `bt` binary with real ffmpeg and `tests/fake-yt-dlp.sh`.
 
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,14 @@ struct Bt {
     seconds: u32,
 }
 
-/// Kills `bt`.
+/// Kills `bt`, and prints its stderr if the test is failing.
 impl Drop for Bt {
     fn drop(&mut self) {
         _ = self.child.kill();
         _ = self.child.wait();
+        if std::thread::panicking() {
+            eprintln!("bt's stderr:\n{}", stderr(&self.dir));
+        }
     }
 }
 
@@ -55,9 +59,19 @@ impl Bt {
 
     /// Spawns `bt` with its files in `dir` and waits until it listens.
     ///
-    /// Returns the process and the address it listens on.
+    /// Its stderr (and its ffmpegs') goes to a file, as ffmpeg always complains when `bt` is
+    /// killed. Returns the process and the address it listens on.
+    ///
+    /// # Panics
+    ///
+    /// Panics with that stderr if `bt` exits before listening.
     fn spawn(dir: &TempDir, seconds: u32) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
+        let log = File::options()
+            .create(true)
+            .append(true)
+            .open(dir.path().join("stderr.log"))
+            .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_bt"))
             .env("BT_ADDR", "127.0.0.1:0")
             .env("BT_CACHE_DIR", dir.path().join("cache"))
@@ -66,11 +80,15 @@ impl Bt {
             .env("FAKE_YTDLP_LOG", dir.path().join("yt-dlp.log"))
             .env("FAKE_YTDLP_SECONDS", seconds.to_string())
             .stdout(Stdio::piped())
+            .stderr(log)
             .spawn()
             .expect("spawn bt");
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let addr = loop {
-            let line = lines.next().expect("bt exited before listening").unwrap();
+            let line = lines
+                .next()
+                .unwrap_or_else(|| panic!("bt exited before listening:\n{}", stderr(dir)))
+                .unwrap();
             if let Some((_, addr)) = line.split_once("listening on ") {
                 break addr.trim().to_string();
             }
@@ -157,6 +175,12 @@ impl Ws {
     async fn add(&mut self, url: &str) {
         self.send(json!({"type": "add", "url": url})).await;
     }
+}
+
+/// Returns what the `bt` with its files in `dir` has written to stderr, across restarts.
+fn stderr(dir: &TempDir) -> String {
+    let log = std::fs::read(dir.path().join("stderr.log")).unwrap_or_default();
+    String::from_utf8_lossy(&log).into_owned()
 }
 
 /// Returns the status of the Entry `i`, or an empty string if there is none.
