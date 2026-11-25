@@ -271,3 +271,48 @@ async fn controls_change_playback_for_everyone() {
     let back = friend.until("prev", |s| s["currentIndex"] == 1).await;
     assert_eq!(back["playing"], true);
 }
+
+#[tokio::test]
+async fn progress_is_shared_on_state_changes() {
+    let bt = Bt::start(60);
+    let mut ws = bt.ws().await;
+    assert_eq!(ws.recv().await["positionSec"], 0.0);
+
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    let playing = ws
+        .until("both entries ready", |s| {
+            s["currentIndex"] == 0 && status(s, 1) == "ready"
+        })
+        .await;
+    let at = playing["at"].as_f64().unwrap();
+    assert!(at <= playing["clock"].as_f64().unwrap());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1100), ws.recv())
+            .await
+            .is_err(),
+        "progress should advance without WebSocket messages"
+    );
+
+    let mut late = bt.ws().await;
+    let snapshot = late.recv().await;
+    assert_eq!(snapshot["at"], playing["at"]);
+    assert_eq!(snapshot["positionSec"], playing["positionSec"]);
+    assert!(snapshot["clock"].as_f64().unwrap() > at);
+
+    ws.send(json!({"type": "pause"})).await;
+    let paused = late.until("paused", |s| s["playing"] == false).await;
+    assert!(paused["positionSec"].as_f64().unwrap() >= 0.5);
+
+    ws.send(json!({"type": "play"})).await;
+    let resumed = late.until("resumed", |s| s["playing"] == true).await;
+    assert!(resumed["positionSec"].as_f64().unwrap() >= paused["positionSec"].as_f64().unwrap());
+
+    ws.send(json!({"type": "pause"})).await;
+    late.until("paused again", |s| s["playing"] == false).await;
+    ws.send(json!({"type": "next"})).await;
+    let next = late.until("next song", |s| s["currentIndex"] == 1).await;
+    assert_eq!(next["positionSec"], 0.0);
+    assert_eq!(next["playing"], false);
+}
