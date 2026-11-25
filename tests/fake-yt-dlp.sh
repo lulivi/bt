@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+# SPDX-License-Identifier: MIT
+#
 # Stands in for yt-dlp in tests (CI can't rely on YouTube).
 #   yt-dlp -J --no-playlist -- <id>                 → metadata JSON
 #   yt-dlp -f bestaudio -o <tmpl> --print … -- <id> → writes a sine wave, prints its path
