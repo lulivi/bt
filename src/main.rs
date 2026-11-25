@@ -95,6 +95,7 @@ enum ClientMsg {
     Pause,
     Next,
     Prev,
+    Shuffle,
 }
 
 #[derive(Serialize)]
@@ -154,6 +155,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Pause => state::Command::Pause,
         ClientMsg::Next => state::Command::Next,
         ClientMsg::Prev => state::Command::Prev,
+        ClientMsg::Shuffle => state::Command::Shuffle,
     };
     app.commands
         .send(cmd)

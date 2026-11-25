@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rand::RngExt;
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
@@ -21,6 +22,35 @@ pub struct State {
     /// Stream time of the last next/prev. Clients mute their buffered (old) audio until their
     /// playback reaches it, so the change is heard cleanly and in sync.
     pub jump_at: Option<f64>,
+}
+
+impl State {
+    /// Changes the order of the Entries after the Current entry when at least two remain.
+    fn shuffle_upcoming(&mut self, rng: &mut impl rand::Rng) {
+        let Some(current) = self.current_index else {
+            return;
+        };
+        let upcoming = &mut self.queue[current + 1..];
+        if upcoming.len() < 2 {
+            return;
+        }
+
+        loop {
+            // A Fisher–Yates pass changes the order as soon as a swap fixes an Entry
+            // in a new position. Retry passes that leave every Entry in place.
+            let mut changed = false;
+            for index in (1..upcoming.len()).rev() {
+                let other = rng.random_range(0..=index);
+                if index != other {
+                    upcoming.swap(index, other);
+                    changed = true;
+                }
+            }
+            if changed {
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -52,6 +82,8 @@ pub enum Command {
     Pause,
     Next,
     Prev,
+    /// Shuffle the Entries after the Current entry.
+    Shuffle,
 }
 
 /// What the yt-dlp worker reports back.
@@ -110,6 +142,7 @@ pub fn spawn(
                         actor.load(target);
                         actor.state.jump_at = Some(actor.clock.now());
                     }
+                    Command::Shuffle => actor.state.shuffle_upcoming(&mut rand::rng()),
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
                 Some(uid) = ended.recv() => actor.ended(uid),
@@ -273,6 +306,7 @@ fn prev(ready: &[bool], current: Option<usize>, played: Duration) -> Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{SeedableRng, rngs::StdRng};
 
     const EARLY: Duration = Duration::from_secs(1);
     const LATE: Duration = Duration::from_secs(4);
@@ -323,5 +357,63 @@ mod tests {
         assert_eq!(after(&R, 0), Some(2));
         assert_eq!(after(&R, 4), None);
         assert_eq!(after(&[true, false], 0), None);
+    }
+
+    fn shuffle_state(current_index: Option<usize>) -> State {
+        let queue = (0..6)
+            .map(|i| Entry {
+                uid: Uuid::from_u128(i),
+                video_id: "aaaaaaaaaaa".into(),
+                title: "A Song".into(),
+                duration: None,
+                status: Status::Pending,
+                file: None,
+            })
+            .collect();
+        State {
+            queue,
+            current_index,
+            playing: true,
+            jump_at: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn shuffle_preserves_the_prefix_and_keeps_all_entries() {
+        let original = shuffle_state(Some(1));
+        let mut shuffled = original.clone();
+        shuffled.shuffle_upcoming(&mut StdRng::seed_from_u64(42));
+
+        assert_eq!(shuffled.current_index, original.current_index);
+        assert_eq!(shuffled.playing, original.playing);
+        assert_eq!(shuffled.jump_at, original.jump_at);
+        assert_eq!(shuffled.queue[..2], original.queue[..2]);
+        assert_ne!(shuffled.queue[2..], original.queue[2..]);
+        shuffled.queue[2..].sort_by_key(|entry| entry.uid);
+        assert_eq!(shuffled.queue, original.queue);
+    }
+
+    #[test]
+    fn each_shuffle_changes_the_upcoming_order() {
+        let mut rng = StdRng::seed_from_u64(42);
+        for current in 0..4 {
+            let mut state = shuffle_state(Some(current));
+            for _ in 0..32 {
+                let before = state.queue.clone();
+                state.shuffle_upcoming(&mut rng);
+                assert_eq!(state.queue[..=current], before[..=current]);
+                assert_ne!(state.queue[current + 1..], before[current + 1..]);
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_leaves_the_queue_alone_when_fewer_than_two_entries_are_upcoming() {
+        for current in [None, Some(4), Some(5)] {
+            let original = shuffle_state(current);
+            let mut shuffled = original.clone();
+            shuffled.shuffle_upcoming(&mut StdRng::seed_from_u64(42));
+            assert_eq!(shuffled, original);
+        }
     }
 }

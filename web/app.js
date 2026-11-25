@@ -123,6 +123,7 @@ const errorEl = document.getElementById("error");
 const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
+const shuffleBtn = document.getElementById("shuffle");
 let playing = true;
 let lastJumpAt; // undefined until the first state
 // After a next/prev, the buffer still holds the old Song: stay muted until our playback
@@ -186,6 +187,7 @@ function connectWs() {
     else if (msg.type === "error") errorEl.textContent = msg.message;
   };
   ws.onclose = () => {
+    shuffleBtn.disabled = true;
     wsStatus.textContent = "Reconnecting…";
     wsTimer = setTimeout(connectWs, wsBackoff);
     wsBackoff = Math.min(wsBackoff * 2, 30000);
@@ -216,6 +218,8 @@ function render(state) {
   applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  const upcomingCount = state.currentIndex == null ? 0 : state.queue.length - state.currentIndex - 1;
+  shuffleBtn.disabled = upcomingCount < 2;
   queueEl.replaceChildren(
     ...state.queue.map((entry, i) => {
       const li = document.createElement("li");
@@ -251,6 +255,7 @@ toggleBtn.addEventListener("click", () => {
 });
 document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
 document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
+shuffleBtn.addEventListener("click", () => send({ type: "shuffle" }));
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
 document.addEventListener("visibilitychange", () => {
