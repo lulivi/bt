@@ -149,22 +149,25 @@ pub fn load(path: &Path) -> anyhow::Result<State> {
 
 /// Saves the published `states` to `path` until the state actor stops.
 ///
-/// Runs apart from the actor, so a slow disk never delays commands. Changes made during a write
-/// are saved together by the next one, and changes to nothing that is saved (like pausing) are
-/// skipped. A failed write is logged and tried again on the next change.
+/// Runs apart from the actor, so a slow disk never delays commands. The first State is always
+/// saved, as it may differ from the one on disk. Changes made during a write are saved together
+/// by the next one, and changes to nothing that is saved (like pausing) are skipped. A failed
+/// write is logged and tried again on the next change.
 pub async fn save_changes(path: PathBuf, mut states: watch::Receiver<State>) {
-    let mut last = Saved::from(&*states.borrow());
-    while states.changed().await.is_ok() {
+    let mut last = None;
+    loop {
         let saved = Saved::from(&*states.borrow_and_update());
-        if saved == last {
-            continue; // e.g. play or pause: nothing that is saved
+        if last.as_ref() != Some(&saved) {
+            let (to, data) = (path.clone(), saved.clone());
+            match tokio::task::spawn_blocking(move || write(&to, &data)).await {
+                Ok(Ok(())) => last = Some(saved),
+                // Keeps `last`, so the next change tries again.
+                Ok(Err(e)) => tracing::error!("saving {}: {e:#}", path.display()),
+                Err(e) => tracing::error!("saving {}: {e}", path.display()),
+            }
         }
-        let (to, data) = (path.clone(), saved.clone());
-        match tokio::task::spawn_blocking(move || write(&to, &data)).await {
-            Ok(Ok(())) => last = saved,
-            // Keeps `last`, so the next change tries again.
-            Ok(Err(e)) => tracing::error!("saving {}: {e:#}", path.display()),
-            Err(e) => tracing::error!("saving {}: {e}", path.display()),
+        if states.changed().await.is_err() {
+            return;
         }
     }
 }
@@ -271,5 +274,19 @@ mod tests {
     fn a_failed_read_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path()).is_err()); // a directory, not a file
+    }
+
+    #[tokio::test]
+    async fn changes_published_before_saving_starts_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let (states, published) = watch::channel(State::default());
+        let saving = save_changes(path.clone(), published); // runs once awaited
+        let saved = parse(JSON.as_bytes()).unwrap();
+        states.send_replace(saved.clone().restore(|_| true));
+        drop(states); // the actor stops, so saving ends
+        saving.await;
+        let json = fs::read(&path).expect("the change is saved");
+        assert_eq!(parse(&json).unwrap(), saved);
     }
 }
