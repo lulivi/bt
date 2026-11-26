@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! The Radio: a mixer thread feeding PCM in real time to one long-lived ffmpeg encoder,
 //! whose MP3 output is broadcast to every listener.
 

@@ -1,8 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+# SPDX-License-Identifier: MIT
+
 .PHONY: run check build-release deploy logs
 
 DEPLOY_HOST ?= bt
 DEPLOY_TARGET ?= aarch64-unknown-linux-musl
 RELEASE_BIN := target/$(DEPLOY_TARGET)/release/bt
+
+# Files that need no SPDX header. The [-] in the check keeps the Makefile from matching itself.
+NO_HEADER := ':!*.md' ':!*.lock' ':!*.png' ':!LICENSE' ':!.gitignore'
 
 run:
 	cargo run
@@ -13,6 +19,10 @@ check:
 	cargo test
 	shellcheck tests/*.sh
 	actionlint
+	@git rev-parse --is-inside-work-tree >/dev/null
+	@missing=$$(for tag in 'SPDX[-]FileCopyrightText:' 'SPDX[-]License-Identifier:'; do \
+		git grep -L "$$tag" -- $(NO_HEADER); done | sort -u); \
+	[ -z "$$missing" ] || { echo "Missing SPDX header:"; echo "$$missing"; exit 1; }
 
 build-release:
 	cargo build --release --target $(DEPLOY_TARGET)

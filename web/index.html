@@ -1,4 +1,8 @@
 <!doctype html>
+<!--
+  SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+  SPDX-License-Identifier: MIT
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -16,6 +20,10 @@
     <section aria-labelledby="now-label">
       <h2 id="now-label">Now playing</h2>
       <p id="now">Nothing</p>
+      <div id="playback-progress" hidden>
+        <progress id="track-progress" aria-label="Song progress" max="1" value="0"></progress>
+        <span id="playback-time"></span>
+      </div>
       <div class="controls">
         <button id="prev" aria-label="Previous">⏮</button>
         <button id="toggle" aria-label="Pause">⏸</button>

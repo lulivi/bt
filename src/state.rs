@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+// SPDX-License-Identifier: MIT
+
 //! The state actor: one task owns the Queue, applies commands one at a time and publishes
 //! every new State. It also tells the mixer what to play.
 
@@ -19,6 +22,10 @@ pub struct State {
     pub queue: Vec<Entry>,
     pub current_index: Option<usize>,
     pub playing: bool,
+    /// Seconds of the Current entry that the mixer has played.
+    pub position_sec: f64,
+    /// Server stream time at which `position_sec` was sampled.
+    pub at: f64,
     /// Stream time of the last next/prev. Clients mute their buffered (old) audio until their
     /// playback reaches it, so the change is heard cleanly and in sync.
     pub jump_at: Option<f64>,
@@ -109,6 +116,7 @@ pub fn spawn(
     let (cmd_tx, mut commands) = mpsc::channel(64);
     let (state_tx, state_rx) = watch::channel(State {
         playing: true,
+        at: clock.now(),
         ..State::default()
     });
     let (fetch_tx, mut fetched) = mpsc::unbounded_channel();
@@ -149,11 +157,13 @@ pub fn spawn(
                 else => break,
             }
             state_tx.send_if_modified(|published| {
-                let changed = *published != actor.state;
-                if changed {
-                    published.clone_from(&actor.state);
+                if *published == actor.state {
+                    return false;
                 }
-                changed
+                actor.state.position_sec = actor.played().as_secs_f64();
+                actor.state.at = actor.clock.now();
+                published.clone_from(&actor.state);
+                true
             });
         }
     });
@@ -375,6 +385,7 @@ mod tests {
             current_index,
             playing: true,
             jump_at: Some(1.0),
+            ..State::default()
         }
     }
 
