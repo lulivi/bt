@@ -100,6 +100,7 @@ enum ClientMsg {
     Pause,
     Next,
     Prev,
+    Shuffle,
     #[serde(rename_all = "camelCase")]
     Seek {
         position_sec: f64,
@@ -163,6 +164,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Pause => state::Command::Pause,
         ClientMsg::Next => state::Command::Next,
         ClientMsg::Prev => state::Command::Prev,
+        ClientMsg::Shuffle => state::Command::Shuffle,
         ClientMsg::Seek { position_sec } => state::Command::Seek(position_sec),
     };
     app.commands
