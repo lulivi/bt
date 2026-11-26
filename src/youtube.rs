@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 use url::Url;
 
+/// The hosts of YouTube video pages, besides `youtu.be`.
 const HOSTS: [&str; 4] = [
     "youtube.com",
     "www.youtube.com",
@@ -17,9 +18,11 @@ const HOSTS: [&str; 4] = [
     "music.youtube.com",
 ];
 
-/// The video ID of a YouTube video link, or `None` for anything else.
+/// Extracts the video ID of a YouTube video link.
 ///
-/// Only an ID matching `^[A-Za-z0-9_-]{11}$` ever leaves this function, so it is safe to pass to
+/// Returns `None` for anything else.
+///
+/// Only an ID passing [`is_video_id`] ever leaves this function, so it is safe to pass to
 /// yt-dlp as an argument (after `--`, since real IDs may start with `-`).
 pub fn video_id(input: &str) -> Option<String> {
     let url = Url::parse(input.trim()).ok()?;
@@ -37,19 +40,32 @@ pub fn video_id(input: &str) -> Option<String> {
         (h, ["shorts", id]) if HOSTS.contains(&h) => (*id).to_string(),
         _ => return None,
     };
-    let valid = id.len() == 11
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    valid.then_some(id)
+    is_video_id(&id).then_some(id)
 }
 
+/// Returns whether `id` is a well-formed video ID: `^[A-Za-z0-9_-]{11}$`.
+///
+/// Such an ID is safe in file names, and as a yt-dlp argument after `--`.
+pub fn is_video_id(id: &str) -> bool {
+    id.len() == 11
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// What yt-dlp knows about a Song.
 pub struct Metadata {
+    /// The video's title.
     pub title: String,
+    /// Length in seconds, if yt-dlp reports it.
     pub duration: Option<f64>,
 }
 
-/// `yt-dlp -J --no-playlist -- <id>`
+/// Fetches a Song's metadata: `yt-dlp -J --no-playlist -- <id>`.
+///
+/// # Errors
+///
+/// Fails if yt-dlp does, or its output can't be parsed.
 pub async fn metadata(ytdlp: &str, id: &str) -> anyhow::Result<Metadata> {
     #[derive(Deserialize)]
     struct Info {
@@ -64,7 +80,11 @@ pub async fn metadata(ytdlp: &str, id: &str) -> anyhow::Result<Metadata> {
     })
 }
 
-/// Downloads the audio into `cache` and returns the file to play.
+/// Downloads a Song's audio into `cache` and returns the file to play.
+///
+/// # Errors
+///
+/// Fails if yt-dlp does, or it doesn't produce the file it reports.
 pub async fn download(ytdlp: &str, cache: &Path, id: &str) -> anyhow::Result<PathBuf> {
     let template = cache.join(format!("{id}.%(ext)s"));
     let out = run(Command::new(ytdlp)
@@ -80,6 +100,13 @@ pub async fn download(ytdlp: &str, cache: &Path, id: &str) -> anyhow::Result<Pat
     Ok(path)
 }
 
+/// Runs `cmd` to its end, without input, and returns its standard output.
+///
+/// The process is killed if the future is dropped.
+///
+/// # Errors
+///
+/// Fails if `cmd` can't be started or exits unsuccessfully; the error includes its standard error.
 async fn run(cmd: &mut Command) -> anyhow::Result<Vec<u8>> {
     let out = cmd
         .stdin(std::process::Stdio::null())

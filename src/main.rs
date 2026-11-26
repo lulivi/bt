@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
 // SPDX-License-Identifier: MIT
 
+//! bt, a shared radio: the web server, its configuration and the Listeners' connections.
+
+mod persist;
 mod radio;
 mod state;
 mod youtube;
@@ -22,18 +25,30 @@ use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
 
+/// The web page, embedded in the binary.
 #[derive(Embed)]
 #[folder = "web/"]
 struct Web;
 
+/// What every request handler shares.
 #[derive(Clone)]
 struct App {
+    /// The MP3 broadcast, to subscribe to.
     mp3: broadcast::Sender<radio::Chunk>,
+    /// The state actor's inbox.
     commands: mpsc::Sender<state::Command>,
+    /// The published State.
     state: watch::Receiver<state::State>,
+    /// Stream time, sent with every State.
     clock: radio::Clock,
 }
 
+/// Starts the Radio, the state actor and the web server, configured by the `BT_*` variables.
+///
+/// # Errors
+///
+/// Fails if the configuration is invalid, the files can't be set up, ffmpeg doesn't start or the
+/// address can't be bound.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -50,10 +65,16 @@ async fn main() -> anyhow::Result<()> {
     };
     std::fs::create_dir_all(&config.cache_dir)
         .with_context(|| format!("creating {}", config.cache_dir.display()))?;
+    let state_file = PathBuf::from(var("BT_STATE_FILE", "state.json"));
+    if let Some(dir) = state_file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let restored = persist::load(&state_file)?;
 
     let (ended_tx, ended_rx) = mpsc::unbounded_channel();
     let (mp3, deck, clock) = radio::start(&config.ffmpeg, ended_tx)?;
-    let (commands, state) = state::spawn(config, deck, clock.clone(), ended_rx);
+    let (commands, state) = state::spawn(config, restored, deck, clock.clone(), ended_rx);
+    tokio::spawn(persist::save_changes(state_file, state.clone()));
 
     let app = Router::new()
         .route("/stream", get(stream_mp3))
@@ -73,7 +94,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The endless MP3 broadcast. `Range` is ignored on purpose: there is no length to satisfy.
+/// Serves the endless MP3 broadcast.
+///
+/// `Range` is ignored on purpose: there is no length to satisfy.
 async fn stream_mp3(State(app): State<App>) -> Response {
     // A listener that falls behind the broadcast (`Lagged`) is dropped; it reconnects on its own.
     let chunks = stream::unfold(app.mp3.subscribe(), |mut rx| async move {
@@ -90,44 +113,65 @@ async fn stream_mp3(State(app): State<App>) -> Response {
         .into_response()
 }
 
+/// A message from a Listener.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMsg {
+    /// Append the Song in this link to the Queue.
     Add {
+        /// The link as pasted, not yet validated.
         url: String,
     },
+    /// Resume the Radio.
     Play,
+    /// Silence the Radio.
     Pause,
+    /// Move to the next Entry.
     Next,
+    /// Restart the Current entry or move to the previous one.
     Prev,
+    /// Shuffle the Entries after the Current entry.
     Shuffle,
+    /// Jump to a position in the Current entry.
     #[serde(rename_all = "camelCase")]
     Seek {
+        /// The position, in seconds.
         position_sec: f64,
     },
 }
 
+/// A message to a Listener.
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerMsg<'a> {
     /// The full State, plus the stream time now so clients can follow the stream clock.
     State {
+        /// Stream time now, in seconds.
         clock: f64,
+        /// The State, its fields inlined in the message.
         #[serde(flatten)]
         state: &'a state::State,
     },
+    /// Why the Listener's last message was rejected.
     Error {
+        /// The text to show.
         message: &'a str,
     },
 }
 
+/// Upgrades a request to a Listener's WebSocket.
+///
+/// Messages over 4 KB are refused.
 async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
     upgrade
         .max_message_size(4096)
         .on_upgrade(|socket| listener(socket, app))
 }
 
-/// One Listener's WebSocket: the full State on connect and on every change; commands in.
+/// Serves one Listener's WebSocket until it closes.
+///
+/// Sends the full State on connect and on every change, and handles the messages received.
+/// Errors go to this Listener only.
 async fn listener(mut socket: WebSocket, mut app: App) {
     // `changed()` never fires for the value already there, so send it first.
     let mut out = state_msg(&mut app);
@@ -155,6 +199,12 @@ async fn listener(mut socket: WebSocket, mut app: App) {
     }
 }
 
+/// Handles one message from a Listener, sending its command to the state actor.
+///
+/// # Errors
+///
+/// Returns the text to show the Listener if the message is unknown, the link isn't a YouTube
+/// video or the server is shutting down.
 async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
     let cmd = match serde_json::from_str(text).map_err(|_| "Unknown command")? {
         ClientMsg::Add { url } => {
@@ -173,6 +223,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         .map_err(|_| "Server is shutting down")
 }
 
+/// Builds the message with the current State, marking it as seen.
 fn state_msg(app: &mut App) -> Message {
     let state = app.state.borrow_and_update();
     to_text(&ServerMsg::State {
@@ -181,10 +232,16 @@ fn state_msg(app: &mut App) -> Message {
     })
 }
 
+/// Serializes `msg` as a WebSocket text message.
+///
+/// # Panics
+///
+/// Panics if `msg` can't be serialized, which none of its variants cause.
 fn to_text(msg: &ServerMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("serializable"))
 }
 
+/// Serves a file of the embedded web page, or 404.
 async fn static_file(uri: Uri) -> Response {
     let path = match uri.path().trim_start_matches('/') {
         "" => "index.html",

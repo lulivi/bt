@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
 // SPDX-License-Identifier: MIT
 
-//! The state actor: one task owns the Queue, applies commands one at a time and publishes
-//! every new State. It also tells the mixer what to play.
+//! The state actor.
+//!
+//! One task owns the Queue, applies commands one at a time and publishes every new State. It
+//! also tells the mixer what to play.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -16,21 +18,28 @@ use uuid::Uuid;
 use crate::radio::{Clock, Deck, Decoder};
 use crate::youtube;
 
+/// What every Listener sees, sent in full on every change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
+    /// The Entries, in order.
     pub queue: Vec<Entry>,
+    /// Position of the Current entry in `queue`; `None` when idle.
     pub current_index: Option<usize>,
+    /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
     /// Playback position in the Current entry, in seconds.
     pub position_sec: f64,
     /// Server stream time at which `position_sec` was sampled.
     pub at: f64,
-    /// Stream time of the last next/prev/seek. Clients mute their buffered (old) audio until their
+    /// Stream time of the last next/prev/seek.
+    ///
+    /// Clients mute their buffered (old) audio until their
     /// playback reaches it, so the change is heard cleanly and in sync.
     pub jump_at: Option<f64>,
 }
 
+/// Changes to the [`State`] that don't need the Actor.
 impl State {
     /// Changes the order of the Entries after the Current entry when at least two remain.
     fn shuffle_upcoming(&mut self, rng: &mut impl rand::Rng) {
@@ -60,34 +69,51 @@ impl State {
     }
 }
 
+/// One place in the Queue that refers to a Song.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
+    /// Identifies the Entry; the same Song can be in several.
     pub uid: Uuid,
+    /// The Song.
     pub video_id: String,
+    /// The Song's title, or its video ID until the metadata is fetched.
     pub title: String,
+    /// Length in seconds; `None` until known.
     pub duration: Option<f64>,
+    /// How far it is from being playable.
     pub status: Status,
+    /// The audio to play, once ready; never sent to Listeners.
     #[serde(skip)]
-    file: Option<PathBuf>,
+    pub file: Option<PathBuf>,
 }
 
+/// How far an Entry is from being playable.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    /// Waiting for the worker, which a restored Entry without audio does again.
     Pending,
+    /// The metadata is known and the audio is being downloaded.
     Downloading,
+    /// The audio can be played.
     Ready,
+    /// The metadata or audio couldn't be fetched; tried again after a restart.
     Error,
 }
 
+/// A Listener's change to the Radio.
 #[derive(Debug)]
 pub enum Command {
     /// Append a Song; the ID is already validated.
     Add(String),
+    /// Resume the Current entry where it was.
     Play,
+    /// Broadcast silence until `Play`.
     Pause,
+    /// Move to the following ready Entry, as in [`next`].
     Next,
+    /// Restart the Current entry or move to the preceding ready one, as in [`prev`].
     Prev,
     /// Shuffle the Entries after the Current entry.
     Shuffle,
@@ -97,40 +123,50 @@ pub enum Command {
 
 /// What the yt-dlp worker reports back.
 enum Fetched {
+    /// The metadata of the Entry with this uid.
     Metadata(Uuid, youtube::Metadata),
+    /// The Entry's audio is being downloaded.
     Downloading(Uuid),
+    /// The Entry's audio file, or why it couldn't be fetched.
     Done(Uuid, anyhow::Result<PathBuf>),
 }
 
+/// The programs and the directory the actor uses.
 pub struct Config {
+    /// The ffmpeg binary.
     pub ffmpeg: String,
+    /// The yt-dlp binary.
     pub ytdlp: String,
+    /// Where audio is downloaded.
     pub cache_dir: PathBuf,
 }
 
-/// Spawns the actor; returns its command inbox and the published State.
+/// Spawns the state actor and its yt-dlp worker.
+///
+/// The actor starts from `state`, plays through `deck` and moves on when an Entry's uid arrives
+/// on `ended`. Returns its command inbox and the published [`State`].
 pub fn spawn(
     config: Config,
+    state: State,
     deck: Arc<Mutex<Deck>>,
     clock: Clock,
     mut ended: mpsc::UnboundedReceiver<Uuid>,
 ) -> (mpsc::Sender<Command>, watch::Receiver<State>) {
     let (cmd_tx, mut commands) = mpsc::channel(64);
-    let (state_tx, state_rx) = watch::channel(State {
-        playing: true,
-        at: clock.now(),
-        ..State::default()
-    });
     let (fetch_tx, mut fetched) = mpsc::unbounded_channel();
     let (job_tx, jobs) = mpsc::unbounded_channel();
     tokio::spawn(worker(config.ytdlp, config.cache_dir, jobs, fetch_tx));
 
     let mut actor = Actor {
-        state: state_tx.borrow().clone(),
+        state,
         ffmpeg: config.ffmpeg,
         deck,
         clock,
     };
+    actor.resume(&job_tx);
+    actor.state.position_sec = actor.played().as_secs_f64();
+    actor.state.at = actor.clock.now();
+    let (state_tx, state_rx) = watch::channel(actor.state.clone());
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -173,7 +209,9 @@ pub fn spawn(
     (cmd_tx, state_rx)
 }
 
-/// Fetches metadata and downloads, one Entry at a time, in Queue order.
+/// Fetches metadata and audio for the Entries received on `jobs`.
+///
+/// Works on one Entry at a time, in the order received, and reports progress on `out`.
 async fn worker(
     ytdlp: String,
     cache_dir: PathBuf,
@@ -195,14 +233,40 @@ async fn worker(
     }
 }
 
+/// The state actor's data: the [`State`] it owns and what it needs to play it.
 struct Actor {
+    /// The current State, published after every command or event.
     state: State,
+    /// The ffmpeg binary.
     ffmpeg: String,
+    /// What the mixer plays, shared with it.
     deck: Arc<Mutex<Deck>>,
+    /// Stream time, to record jumps.
     clock: Clock,
 }
 
+/// How commands, the worker and the mixer change the [`State`].
 impl Actor {
+    /// Resumes from a restored [`State`].
+    ///
+    /// Sends every pending Entry to the worker through `jobs`, in Queue order, and loads the
+    /// Current entry. If that one has no audio yet, it stays current and [`Actor::fetched`]
+    /// loads it later.
+    fn resume(&mut self, jobs: &mpsc::UnboundedSender<(Uuid, String)>) {
+        for entry in &self.state.queue {
+            if entry.status == Status::Pending {
+                _ = jobs.send((entry.uid, entry.video_id.clone()));
+            }
+        }
+        let current = self.state.current_index;
+        if current.is_some_and(|i| self.state.queue[i].file.is_some()) {
+            self.load(current);
+        }
+    }
+
+    /// Appends a pending Entry for `video_id` to the Queue.
+    ///
+    /// Returns its uid.
     fn add(&mut self, video_id: String) -> Uuid {
         let uid = Uuid::new_v4();
         self.state.queue.push(Entry {
@@ -216,6 +280,11 @@ impl Actor {
         uid
     }
 
+    /// Applies what the worker reports about an Entry.
+    ///
+    /// An Entry that becomes ready is loaded if the Radio is idle or it already is the Current
+    /// entry (restored without its audio). If the Current entry fails, the Radio moves on to
+    /// the next ready one, or goes idle.
     fn fetched(&mut self, event: Fetched) {
         let uid = match &event {
             Fetched::Metadata(uid, _) | Fetched::Downloading(uid) | Fetched::Done(uid, _) => *uid,
@@ -233,27 +302,41 @@ impl Actor {
             Fetched::Done(_, Ok(file)) => {
                 entry.status = Status::Ready;
                 entry.file = Some(file);
-                if self.state.current_index.is_none() {
+                if self
+                    .state
+                    .current_index
+                    .is_none_or(|current| current == index)
+                {
                     // Idle: this Entry becomes current. Paused, it waits for `play`.
                     self.load(Some(index));
                 }
             }
-            Fetched::Done(_, Err(_)) => entry.status = Status::Error,
+            Fetched::Done(_, Err(_)) => {
+                entry.status = Status::Error;
+                if self.state.current_index == Some(index) {
+                    self.load(after(&ready(&self.state.queue), index));
+                }
+            }
         }
     }
 
+    /// Plays or pauses the Radio.
+    ///
     /// Pausing makes the mixer send silence; the decoder waits where it was.
     fn set_playing(&mut self, playing: bool) {
         self.state.playing = playing;
         self.deck.lock().unwrap().playing = playing;
     }
 
+    /// Returns how much of the Current entry has been broadcast.
     fn played(&self) -> Duration {
         let deck = self.deck.lock().unwrap();
         deck.decoder.as_ref().map_or(Duration::ZERO, |d| d.played())
     }
 
-    /// The mixer finished an Entry: move on to the next ready one, or go idle.
+    /// Moves on to the next ready Entry, or goes idle, when the mixer finishes `uid`.
+    ///
+    /// Ignored if `uid` is no longer the Current entry.
     fn ended(&mut self, uid: Uuid) {
         let Some(current) = self.state.current_index else {
             return;
@@ -264,7 +347,9 @@ impl Actor {
         self.load(after(&ready(&self.state.queue), current));
     }
 
-    /// Makes `index` the Current entry and plays it from the start; `None` goes idle.
+    /// Makes `index` the Current entry and loads it from the start.
+    ///
+    /// Goes idle with `None`, or if the Entry has no audio or its decoder doesn't start.
     fn load(&mut self, index: Option<usize>) {
         let decoder = index.and_then(|i| self.open_decoder(i, Duration::ZERO));
         self.state.current_index = index.filter(|_| decoder.is_some());
@@ -312,17 +397,22 @@ fn seek_position(position_sec: f64, duration: Option<f64>) -> Option<Duration> {
     Duration::try_from_secs_f64(position_sec.clamp(0.0, duration)).ok()
 }
 
+/// Returns whether each Entry of `queue` is ready.
 fn ready(queue: &[Entry]) -> Vec<bool> {
     queue.iter().map(|e| e.status == Status::Ready).collect()
 }
 
-/// The first ready Entry after `current`, without wrapping (the Queue ending on its own).
+/// Returns the first ready Entry after `current`, for when an Entry ends on its own.
+///
+/// Doesn't wrap: after the last one, the Queue has ended.
 fn after(ready: &[bool], current: usize) -> Option<usize> {
     (current + 1..ready.len()).find(|&i| ready[i])
 }
 
-/// `next`: the following ready Entry, wrapping to the first; from idle, the first ready one.
-/// With only the current Entry ready, that one restarts.
+/// Returns the Entry to play on `next`.
+///
+/// That is the following ready Entry, wrapping to the first; from idle, the first ready one.
+/// With only the Current entry ready, that one restarts.
 fn next(ready: &[bool], current: Option<usize>) -> Option<usize> {
     let n = ready.len();
     match current {
@@ -334,8 +424,10 @@ fn next(ready: &[bool], current: Option<usize>) -> Option<usize> {
 /// How long the Current entry must have played before `prev` restarts it instead.
 const RESTART_AFTER: Duration = Duration::from_secs(3);
 
-/// `prev`: past [`RESTART_AFTER`], restart the Current entry; before it, the preceding ready
-/// Entry, wrapping to the last; from idle, the last ready one.
+/// Returns the Entry to play on `prev`.
+///
+/// If the Current entry has `played` for longer than [`RESTART_AFTER`], it restarts. Otherwise
+/// it is the preceding ready Entry, wrapping to the last; from idle, the last ready one.
 fn prev(ready: &[bool], current: Option<usize>, played: Duration) -> Option<usize> {
     let n = ready.len();
     match current {
