@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+# SPDX-License-Identifier: MIT
+
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
