@@ -42,7 +42,7 @@ make run    # then open http://localhost:3000 and press "Connect audio"
 make check  # fmt, clippy, tests, shellcheck, actionlint (what CI runs)
 ```
 
-The tests use real ffmpeg and a fake yt-dlp (`tests/fake-yt-dlp.sh`), so they don't need network access.
+The tests use real ffmpeg and a fake yt-dlp (`tests/fake-yt-dlp.sh`), so they don't need network access. The browser tests (`tests/web.rs`) also need Chrome: `google-chrome` in `PATH`, or its binary in `CHROME`.
 
 ### Configuration
 
