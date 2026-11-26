@@ -316,3 +316,40 @@ async fn progress_is_shared_on_state_changes() {
     assert_eq!(next["positionSec"], 0.0);
     assert_eq!(next["playing"], false);
 }
+
+#[tokio::test]
+async fn seeking_while_paused_moves_playback_for_every_listener() {
+    let bt = Bt::start(12);
+    let mut ws = bt.ws().await;
+    let mut friend = bt.ws().await;
+    ws.recv().await;
+    friend.recv().await;
+    ws.send(json!({"type": "pause"})).await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    friend
+        .until("both songs ready", |s| {
+            s["currentIndex"] == 0 && status(s, 1) == "ready" && s["playing"] == false
+        })
+        .await;
+
+    ws.send(json!({"type": "seek", "positionSec": 11.5})).await;
+    for listener in [&mut ws, &mut friend] {
+        let sought = listener
+            .until("seek to 11.5 seconds", |s| s["positionSec"] == 11.5)
+            .await;
+        assert_eq!(sought["playing"], false);
+        assert_eq!(sought["currentIndex"], 0);
+        assert!(sought["jumpAt"].as_f64().is_some());
+    }
+
+    friend.send(json!({"type": "play"})).await;
+    // Resuming from 11.5 s leaves only half a second of the first song.
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        ws.until("the next song", |s| s["currentIndex"] == 1),
+    )
+    .await
+    .expect("first song should finish shortly after resuming");
+}
