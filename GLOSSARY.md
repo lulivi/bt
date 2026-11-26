@@ -27,3 +27,7 @@ _Avoid_: Player, station
 **Listener**:
 A person with a browser connected to the Radio.
 _Avoid_: User, client
+
+**Jump**:
+The Radio moving to another Song or another place in the Current entry on a Listener's request (next, prev, seek); pausing and resuming are not Jumps.
+_Avoid_: Skip

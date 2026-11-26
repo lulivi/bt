@@ -29,11 +29,61 @@ function hearing() {
   return streamRequestedAt + clockOffset - STREAM_LATENCY + audio.currentTime;
 }
 
+// Where the browser can play MP3 through Media Source Extensions, we feed it the stream
+// ourselves. A plain <audio src> buffers seconds ahead and ignores seeks within that buffer
+// (phones do), so a Jump would be heard late; with MSE we own the buffer and can seek in it.
+const MSE = !!window.MediaSource && MediaSource.isTypeSupported("audio/mpeg");
+const KEEP_PLAYED = 10; // seconds of already-played audio kept in the MSE buffer
+let feed = null; // aborts the current MSE fetch
+
 function startStream(fresh) {
-  audio.src = fresh ? "/stream?t=" + Date.now() : "/stream";
   streamRequestedAt = performance.now() / 1000;
   lastProgress = Date.now();
+  if (MSE) startFeed();
+  else audio.src = fresh ? "/stream?t=" + Date.now() : "/stream";
   audio.play().catch(() => {});
+}
+
+/** Resolves when `sb` finishes its current update, rejects if it fails. */
+function updated(sb) {
+  return new Promise((resolve, reject) => {
+    sb.onupdateend = resolve;
+    sb.onerror = reject;
+  });
+}
+
+/** Plays a fresh `/stream` connection through a new MediaSource. Any failure reconnects. */
+function startFeed() {
+  feed?.abort();
+  const abort = (feed = new AbortController());
+  const source = new MediaSource();
+  if (audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+  audio.src = URL.createObjectURL(source);
+  source.addEventListener(
+    "sourceopen",
+    async () => {
+      try {
+        const sb = source.addSourceBuffer("audio/mpeg");
+        sb.mode = "sequence"; // the stream has no timestamps: play the bytes in order from 0
+        const res = await fetch("/stream", { signal: abort.signal, cache: "no-store" });
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) throw new Error("stream ended");
+          const b = sb.buffered;
+          if (b.length > 0 && audio.currentTime - b.start(0) > 2 * KEEP_PLAYED) {
+            sb.remove(0, audio.currentTime - KEEP_PLAYED);
+            await updated(sb);
+          }
+          sb.appendBuffer(value);
+          await updated(sb);
+        }
+      } catch {
+        if (!abort.signal.aborted) scheduleReconnect();
+      }
+    },
+    { once: true },
+  );
 }
 
 function scheduleReconnect() {
