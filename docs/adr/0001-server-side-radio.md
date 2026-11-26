@@ -7,4 +7,4 @@ Listeners must hear the same music at the same time, including on phones with th
 - Extracting audio with `yt-dlp` goes against YouTube's Terms of Service: this is for private use, at our own risk, and `yt-dlp` must be kept up to date.
 - The server needs `ffmpeg`, `yt-dlp` and a JS runtime (`deno`) for `yt-dlp`.
 - Per-listener features (seek, local pause) don't fit: everyone hears the same broadcast.
-- A plain `<audio src>` buffers seconds of the stream and ignores seeks within it, so where the browser can play MP3 through Media Source Extensions the page feeds `/stream` to `<audio>` itself and a Jump is heard at once.
+- A plain `<audio src>` buffers seconds of the stream and ignores seeks within it, so where the browser can play MP3 through Media Source Extensions the page feeds `/stream` to `<audio>` itself and a Jump is heard at once; other browsers (iPhones) reconnect the stream on a Jump or resume instead.

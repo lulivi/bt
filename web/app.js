@@ -157,8 +157,11 @@ setInterval(() => {
 // Drop whatever is buffered and play from the live edge, so a change on the Radio is heard
 // now rather than a few seconds late. Every Listener does this, which also syncs them.
 function goLive() {
+  if (!wantAudio) return;
+  // Without MSE the browser ignores seeks in its buffer: a fresh connection starts live.
+  if (!MSE) return startStream(true);
   const b = audio.buffered;
-  if (!wantAudio || b.length === 0) return;
+  if (b.length === 0) return;
   const target = b.end(b.length - 1) - LAG_FLOOR;
   if (target - audio.currentTime < 0.2) return;
   try {
@@ -195,6 +198,8 @@ function applyMute() {
 
 function jumpTo(at) {
   const now = hearing();
+  // Without MSE, reconnecting skips the old audio, so there is nothing to hold.
+  if (!MSE) return goLive();
   // Hidden (locked phone): timers are throttled, so just skip ahead and accept the overlap.
   if (now === null || document.visibilityState !== "visible") return goLive();
   holdUntil = at;

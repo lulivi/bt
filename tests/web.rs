@@ -93,6 +93,7 @@ impl Chrome {
             )
             .await;
         chrome.session = attached["sessionId"].as_str().unwrap().to_string();
+        chrome.call(true, "Page.enable", json!({})).await;
         chrome
             .call(
                 true,
@@ -201,6 +202,24 @@ async fn a_jump_is_heard_at_once_through_mse() {
             "the new Song to be heard",
             Duration::from_secs(1),
             &format!("!audio.muted && hearing() >= {jump_at}"),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn without_mse_a_jump_reconnects_the_stream() {
+    let (_bt, mut ws, mut chrome) = listening("delete window.MediaSource;").await;
+    assert_eq!(
+        chrome.eval("audio.src.endsWith('/stream')").await,
+        json!(true)
+    );
+    ws.send(json!({"type": "next"})).await;
+    ws.until("the jump", |s| s["currentIndex"] == 1).await;
+    chrome
+        .until(
+            "the reconnected stream to play",
+            Duration::from_secs(15),
+            "audio.src.includes('/stream?t=') && audio.currentTime > 0 && !audio.muted",
         )
         .await;
 }
