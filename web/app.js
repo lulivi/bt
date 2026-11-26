@@ -198,6 +198,8 @@ function applyMute() {
 
 function jumpTo(at) {
   const now = hearing();
+  // Already past it (a Jump missed while the WebSocket was down): nothing to skip.
+  if (now !== null && now >= at) return;
   // Without MSE, reconnecting skips the old audio, so there is nothing to hold.
   if (!MSE) return goLive();
   // Hidden (locked phone): timers are throttled, so just skip ahead and accept the overlap.
