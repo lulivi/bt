@@ -65,20 +65,27 @@ pub struct Decoder {
     child: Child,
     /// The decoded audio, one [`TICK`] per item.
     pcm: Receiver<Vec<u8>>,
+    /// Where in the Entry decoding started.
+    start_at: Duration,
     /// How many ticks have been broadcast.
     played_ticks: u32,
 }
 
 /// Starts decoding.
 impl Decoder {
-    /// Starts `ffmpeg` decoding `file`, for the Entry `uid`.
+    /// Starts `ffmpeg` decoding `file` from `start_at`, for the Entry `uid`.
     ///
     /// # Errors
     ///
     /// Fails if ffmpeg or the thread that reads from it can't be started.
-    pub fn spawn(ffmpeg: &str, file: &Path, uid: Uuid) -> anyhow::Result<Self> {
-        let mut child = Command::new(ffmpeg)
-            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+    pub fn spawn(ffmpeg: &str, file: &Path, uid: Uuid, start_at: Duration) -> anyhow::Result<Self> {
+        let mut command = Command::new(ffmpeg);
+        command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+        if !start_at.is_zero() {
+            command.args(["-ss", &format!("{:.9}", start_at.as_secs_f64())]);
+        }
+        let mut child = command
+            .arg("-i")
             .arg(file)
             .args(["-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"])
             .stdin(Stdio::null())
@@ -111,6 +118,7 @@ impl Decoder {
             uid,
             child,
             pcm,
+            start_at,
             played_ticks: 0,
         })
     }
@@ -118,9 +126,9 @@ impl Decoder {
 
 /// Reports progress.
 impl Decoder {
-    /// Returns how much of the Entry has been broadcast.
+    /// Returns the position in the Entry, including any seek before the decoder started.
     pub fn played(&self) -> Duration {
-        TICK * self.played_ticks
+        self.start_at.saturating_add(TICK * self.played_ticks)
     }
 }
 

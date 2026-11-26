@@ -126,13 +126,15 @@ const errorEl = document.getElementById("error");
 const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
+const shuffleBtn = document.getElementById("shuffle");
 const progressEl = document.getElementById("playback-progress");
 const trackProgress = document.getElementById("track-progress");
 const playbackTime = document.getElementById("playback-time");
 let playing = true;
 let progressSample = null;
+let progressDrag = null;
 let lastJumpAt; // undefined until the first state
-// After a next/prev, the buffer still holds the old Song: stay muted until our playback
+// After a next/prev/seek, the buffer can still hold old audio: stay muted until our playback
 // reaches the stream time of the jump, so the change is heard cleanly and in sync.
 let holdUntil = null;
 let holdSince = 0;
@@ -193,6 +195,7 @@ function connectWs() {
     else if (msg.type === "error") errorEl.textContent = msg.message;
   };
   ws.onclose = () => {
+    shuffleBtn.disabled = true;
     wsStatus.textContent = "Reconnecting…";
     wsTimer = setTimeout(connectWs, wsBackoff);
     wsBackoff = Math.min(wsBackoff * 2, 30000);
@@ -209,21 +212,51 @@ function formatDuration(seconds) {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 
-function renderProgress() {
+function renderProgress(preview = null) {
   if (progressSample === null) return;
-  const { positionSec, at, duration } = progressSample;
+  const { uid, positionSec, at, duration } = progressSample;
   const serverNow = performance.now() / 1000 + clockOffset;
   const elapsed = playing ? Math.max(0, serverNow - at) : 0;
-  let position = positionSec + elapsed;
+  const dragging = progressDrag?.uid === uid;
+  let position = preview ?? (dragging ? trackProgress.valueAsNumber : positionSec + elapsed);
   if (duration !== null) {
     position = Math.min(position, duration);
-    trackProgress.value = position;
+    if (!dragging && preview === null) trackProgress.valueAsNumber = position;
   }
   const label = formatDuration(position) + (duration === null ? "" : " / " + formatDuration(duration));
   if (playbackTime.textContent !== label) playbackTime.textContent = label;
+  if (trackProgress.getAttribute("aria-valuetext") !== label) {
+    trackProgress.setAttribute("aria-valuetext", label);
+  }
 }
 
 setInterval(renderProgress, 100);
+
+trackProgress.addEventListener("pointerdown", (event) => {
+  if (progressSample) progressDrag = { uid: progressSample.uid, pointerId: event.pointerId };
+});
+function endProgressDrag(event) {
+  const drag = progressDrag;
+  if (drag?.pointerId !== event.pointerId) return;
+  // The range's native change event may run after pointerup.
+  setTimeout(() => {
+    if (progressDrag === drag) progressDrag = null;
+  }, 0);
+}
+window.addEventListener("pointerup", endProgressDrag);
+window.addEventListener("pointercancel", endProgressDrag);
+trackProgress.addEventListener("input", () => {
+  if (!progressDrag || progressDrag.uid === progressSample?.uid) {
+    renderProgress(trackProgress.valueAsNumber);
+  }
+});
+trackProgress.addEventListener("change", () => {
+  const drag = progressDrag;
+  progressDrag = null;
+  if (progressSample?.duration && (!drag || drag.uid === progressSample.uid)) {
+    send({ type: "seek", positionSec: trackProgress.valueAsNumber });
+  }
+});
 
 function render(state) {
   const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
@@ -239,16 +272,20 @@ function render(state) {
   applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  const upcomingCount = state.currentIndex == null ? 0 : state.queue.length - state.currentIndex - 1;
+  shuffleBtn.disabled = upcomingCount < 2;
   const hasProgress = current && Number.isFinite(state.positionSec) && Number.isFinite(state.at);
   progressEl.hidden = !hasProgress;
   if (hasProgress) {
     const duration = current.duration > 0 ? current.duration : null;
-    progressSample = { positionSec: state.positionSec, at: state.at, duration };
+    progressSample = { uid: current.uid, positionSec: state.positionSec, at: state.at, duration };
     trackProgress.hidden = duration === null;
+    trackProgress.disabled = duration === null;
     if (duration !== null) trackProgress.max = duration;
     renderProgress();
   } else {
     progressSample = null;
+    trackProgress.disabled = true;
   }
   queueEl.replaceChildren(
     ...state.queue.map((entry, i) => {
@@ -285,6 +322,7 @@ toggleBtn.addEventListener("click", () => {
 });
 document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
 document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
+shuffleBtn.addEventListener("click", () => send({ type: "shuffle" }));
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
 document.addEventListener("visibilitychange", () => {

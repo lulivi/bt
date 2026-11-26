@@ -130,6 +130,14 @@ enum ClientMsg {
     Next,
     /// Restart the Current entry or move to the previous one.
     Prev,
+    /// Shuffle the Entries after the Current entry.
+    Shuffle,
+    /// Jump to a position in the Current entry.
+    #[serde(rename_all = "camelCase")]
+    Seek {
+        /// The position, in seconds.
+        position_sec: f64,
+    },
 }
 
 /// A message to a Listener.
@@ -206,6 +214,8 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Pause => state::Command::Pause,
         ClientMsg::Next => state::Command::Next,
         ClientMsg::Prev => state::Command::Prev,
+        ClientMsg::Shuffle => state::Command::Shuffle,
+        ClientMsg::Seek { position_sec } => state::Command::Seek(position_sec),
     };
     app.commands
         .send(cmd)
