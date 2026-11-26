@@ -106,6 +106,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "rand 0.10.4",
  "rust-embed",
  "serde",
  "serde_json",
