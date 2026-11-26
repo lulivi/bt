@@ -27,6 +27,10 @@ pub struct State {
     pub current_index: Option<usize>,
     /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
+    /// Seconds of the Current entry that the mixer has played.
+    pub position_sec: f64,
+    /// Server stream time at which `position_sec` was sampled.
+    pub at: f64,
     /// Stream time of the last next/prev.
     ///
     /// Clients mute their buffered (old) audio until their
@@ -125,6 +129,8 @@ pub fn spawn(
         clock,
     };
     actor.resume(&job_tx);
+    actor.state.position_sec = actor.played().as_secs_f64();
+    actor.state.at = actor.clock.now();
     let (state_tx, state_rx) = watch::channel(actor.state.clone());
     tokio::spawn(async move {
         loop {
@@ -153,11 +159,13 @@ pub fn spawn(
                 else => break,
             }
             state_tx.send_if_modified(|published| {
-                let changed = *published != actor.state;
-                if changed {
-                    published.clone_from(&actor.state);
+                if *published == actor.state {
+                    return false;
                 }
-                changed
+                actor.state.position_sec = actor.played().as_secs_f64();
+                actor.state.at = actor.clock.now();
+                published.clone_from(&actor.state);
+                true
             });
         }
     });

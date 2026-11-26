@@ -93,6 +93,7 @@ impl Saved {
             queue: self.queue.into_iter().map(restored).collect(),
             current_index: self.current_index,
             jump_at: None, // stream time starts over
+            ..State::default()
         }
     }
 }

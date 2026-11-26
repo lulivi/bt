@@ -126,7 +126,11 @@ const errorEl = document.getElementById("error");
 const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
+const progressEl = document.getElementById("playback-progress");
+const trackProgress = document.getElementById("track-progress");
+const playbackTime = document.getElementById("playback-time");
 let playing = true;
+let progressSample = null;
 let lastJumpAt; // undefined until the first state
 // After a next/prev, the buffer still holds the old Song: stay muted until our playback
 // reaches the stream time of the jump, so the change is heard cleanly and in sync.
@@ -205,6 +209,22 @@ function formatDuration(seconds) {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 
+function renderProgress() {
+  if (progressSample === null) return;
+  const { positionSec, at, duration } = progressSample;
+  const serverNow = performance.now() / 1000 + clockOffset;
+  const elapsed = playing ? Math.max(0, serverNow - at) : 0;
+  let position = positionSec + elapsed;
+  if (duration !== null) {
+    position = Math.min(position, duration);
+    trackProgress.value = position;
+  }
+  const label = formatDuration(position) + (duration === null ? "" : " / " + formatDuration(duration));
+  if (playbackTime.textContent !== label) playbackTime.textContent = label;
+}
+
+setInterval(renderProgress, 100);
+
 function render(state) {
   const current = state.currentIndex == null ? null : state.queue[state.currentIndex];
   nowEl.textContent = current ? current.title : "Nothing";
@@ -219,6 +239,17 @@ function render(state) {
   applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  const hasProgress = current && Number.isFinite(state.positionSec) && Number.isFinite(state.at);
+  progressEl.hidden = !hasProgress;
+  if (hasProgress) {
+    const duration = current.duration > 0 ? current.duration : null;
+    progressSample = { positionSec: state.positionSec, at: state.at, duration };
+    trackProgress.hidden = duration === null;
+    if (duration !== null) trackProgress.max = duration;
+    renderProgress();
+  } else {
+    progressSample = null;
+  }
   queueEl.replaceChildren(
     ...state.queue.map((entry, i) => {
       const li = document.createElement("li");
