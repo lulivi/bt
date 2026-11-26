@@ -49,7 +49,7 @@ impl Bt {
     /// Each fake Song lasts `seconds`.
     pub fn start(seconds: u32) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (child, addr) = Self::spawn(&dir, seconds);
+        let (child, addr) = Self::spawn(&dir, seconds, "127.0.0.1:0");
         Bt {
             child,
             addr,
@@ -58,17 +58,17 @@ impl Bt {
         }
     }
 
-    /// Kills `bt` and starts it again with the same files.
+    /// Kills `bt` and starts it again with the same files, on the same address.
     ///
     /// `between` gets their directory and runs while `bt` is down.
     pub fn restart(&mut self, between: impl FnOnce(&Path)) {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
         between(self.dir.path());
-        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds);
+        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds, &self.addr);
     }
 
-    /// Spawns `bt` with its files in `dir` and waits until it listens.
+    /// Spawns `bt` with its files in `dir` and waits until it listens on `addr`.
     ///
     /// Its stderr (and its ffmpegs') goes to a file, as ffmpeg always complains when `bt` is
     /// killed. Returns the process and the address it listens on.
@@ -76,7 +76,7 @@ impl Bt {
     /// # Panics
     ///
     /// Panics with that stderr if `bt` exits before listening.
-    fn spawn(dir: &TempDir, seconds: u32) -> (Child, String) {
+    fn spawn(dir: &TempDir, seconds: u32, addr: &str) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
         let log = File::options()
             .create(true)
@@ -84,7 +84,7 @@ impl Bt {
             .open(dir.path().join("stderr.log"))
             .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_bt"))
-            .env("BT_ADDR", "127.0.0.1:0")
+            .env("BT_ADDR", addr)
             .env("BT_CACHE_DIR", dir.path().join("cache"))
             .env("BT_STATE_FILE", dir.path().join("data/state.json"))
             .env("BT_YTDLP", fake)
