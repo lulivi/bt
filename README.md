@@ -20,6 +20,15 @@ A shared space where listening to music becomes something you do together. You b
 
 We’re building the experience, one song at a time. The goal: less friction, more shared moments.
 
+### 📑 Contents
+
+- [Running it](#%EF%B8%8F-running-it)
+  - [Requirements](#requirements)
+  - [Develop](#develop)
+  - [Download a release](#download-a-release)
+  - [More](#more): configuration, access links, deploy, releasing
+- [License](#-license)
+
 ---
 
 ## 🛠️ Running it
@@ -63,3 +72,9 @@ tar -xzf "bt-$target.tar.gz" bt
 - [Access links](docs/access.md): keep bt private to the people you invite
 - [Deploy](docs/deploy.md): install bt on a host as a systemd service
 - [Releasing](docs/releasing.md)
+
+---
+
+## 📄 License
+
+[MIT](LICENSE) © 2026 Lorena Jiménez, Luis Liñán
