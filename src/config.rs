@@ -53,7 +53,9 @@ pub struct Settings {
 /// Loads the settings, reading variables with `env`.
 ///
 /// The config file is the one in `BT_CONFIG`, else `bt/config.toml` in the XDG config directory
-/// (`$XDG_CONFIG_HOME`, else `~/.config`); a missing file there means all defaults. Each `BT_*`
+/// (`$XDG_CONFIG_HOME`, else `~/.config`); a missing file there means all defaults. The cache and
+/// state file default to `bt` in the XDG data directory (`$XDG_DATA_HOME`, else
+/// `~/.local/share`), or to the working directory without either. Each `BT_*`
 /// variable overrides its key in the file: `BT_ACCESS_TOKENS` replaces the whole `access` table.
 ///
 /// # Errors
@@ -96,11 +98,13 @@ pub fn load(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Settings> {
     let or = |picked: Option<(String, String)>, default: &str| {
         picked.map_or_else(|| default.to_string(), |(v, _)| v)
     };
-    let cache_dir = or(pick("BT_CACHE_DIR", "cache_dir", file.cache_dir), "cache");
-    let state_file = or(
-        pick("BT_STATE_FILE", "state_file", file.state_file),
-        "state.json",
-    );
+    // bt's files go in `bt` in the XDG data directory, else in the working directory.
+    let data =
+        xdg(&env, "XDG_DATA_HOME", ".local/share").map_or_else(PathBuf::new, |d| d.join("bt"));
+    let cache_dir = pick("BT_CACHE_DIR", "cache_dir", file.cache_dir)
+        .map_or_else(|| data.join("cache"), |(v, _)| v.into());
+    let state_file = pick("BT_STATE_FILE", "state_file", file.state_file)
+        .map_or_else(|| data.join("state.json"), |(v, _)| v.into());
     let ffmpeg = or(pick("BT_FFMPEG", "ffmpeg", file.ffmpeg), "ffmpeg");
     let ytdlp = or(pick("BT_YTDLP", "ytdlp", file.ytdlp), "yt-dlp");
 
@@ -133,8 +137,8 @@ pub fn load(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Settings> {
     Ok(Settings {
         file: text.and(path),
         addr,
-        cache_dir: cache_dir.into(),
-        state_file: state_file.into(),
+        cache_dir,
+        state_file,
         ffmpeg,
         ytdlp,
         access,
@@ -200,6 +204,11 @@ mod tests {
         assert_eq!(s.state_file, PathBuf::from("state.json"));
         assert_eq!((s.ffmpeg.as_str(), s.ytdlp.as_str()), ("ffmpeg", "yt-dlp"));
         assert!(s.access.is_none());
+
+        let s = load_with(None, &[("HOME", "/h")]).unwrap();
+        assert_eq!(s.cache_dir, PathBuf::from("/h/.local/share/bt/cache"));
+        let s = load_with(None, &[("HOME", "/h"), ("XDG_DATA_HOME", "/d")]).unwrap();
+        assert_eq!(s.state_file, PathBuf::from("/d/bt/state.json"));
     }
 
     #[test]
