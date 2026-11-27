@@ -36,6 +36,10 @@ fn serves_the_page() {
     let (head, body) = get(&bt.addr, "/", 1);
     assert!(head.contains("content-type: text/html"), "{head}");
     assert!(String::from_utf8_lossy(&body).contains("<!doctype html>"));
+    for path in ["/", "/app.js", "/style.css"] {
+        let (head, _) = get(&bt.addr, path, 0);
+        assert!(head.contains("cache-control: no-cache"), "{path}: {head}");
+    }
 }
 
 #[tokio::test]

@@ -346,6 +346,9 @@ fn to_text(msg: &ServerMsg) -> Message {
 }
 
 /// Serves a file of the embedded web page, or 404.
+///
+/// `no-cache` makes browsers check for a new version every time, so a deploy shows on the next
+/// reload.
 async fn static_file(uri: Uri) -> Response {
     let path = match uri.path().trim_start_matches('/') {
         "" => "index.html",
@@ -360,7 +363,14 @@ async fn static_file(uri: Uri) -> Response {
         Some("css") => "text/css; charset=utf-8",
         _ => "application/octet-stream",
     };
-    ([(header::CONTENT_TYPE, mime)], file.data).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        file.data,
+    )
+        .into_response()
 }
 
 #[cfg(test)]
