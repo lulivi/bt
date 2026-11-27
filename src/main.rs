@@ -3,6 +3,7 @@
 
 //! bt, a shared radio: the web server, its configuration and the Listeners' connections.
 
+mod auth;
 mod persist;
 mod radio;
 mod state;
@@ -11,6 +12,7 @@ mod youtube;
 use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
@@ -70,13 +72,18 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let restored = persist::load(&state_file)?;
+    let env = |name: &str| std::env::var(name).ok();
+    let access = auth::Access::new(
+        env("BT_ACCESS_TOKENS").as_deref(),
+        env("BT_PUBLIC_URL").as_deref(),
+    )?;
 
     let (ended_tx, ended_rx) = mpsc::unbounded_channel();
     let (mp3, deck, clock) = radio::start(&config.ffmpeg, ended_tx)?;
     let (commands, state) = state::spawn(config, restored, deck, clock.clone(), ended_rx);
     tokio::spawn(persist::save_changes(state_file, state.clone()));
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/stream", get(stream_mp3))
         .route("/ws", get(ws))
         .fallback(get(static_file))
@@ -86,6 +93,18 @@ async fn main() -> anyhow::Result<()> {
             state,
             clock,
         });
+    match access {
+        Some(access) => {
+            for (name, link) in access.links() {
+                tracing::info!("access link for {name}: {link}");
+            }
+            app = app.layer(axum::middleware::from_fn_with_state(
+                Arc::new(access),
+                auth::check,
+            ));
+        }
+        None => tracing::warn!("BT_ACCESS_TOKENS is unset: anyone can use bt"),
+    }
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
