@@ -509,6 +509,25 @@ fn everything_needs_a_valid_access_link() {
     }
 }
 
+#[test]
+fn every_response_has_the_security_headers() {
+    let bt = start_private();
+    for (path, headers) in [
+        ("/".to_string(), format!("Cookie: bt_token={TOKEN}\r\n")),
+        ("/".into(), String::new()),
+        (format!("/?token={TOKEN}"), String::new()),
+    ] {
+        let (head, _) = get_with(&bt.addr, &path, &headers, 0);
+        for want in [
+            "content-security-policy: default-src 'self'; media-src 'self' blob:; frame-ancestors 'none'",
+            "x-content-type-options: nosniff",
+            "referrer-policy: no-referrer",
+        ] {
+            assert!(head.contains(want), "{path} {headers}: {head}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_websocket_needs_the_cookie_and_the_public_origin() {
     let bt = start_private();

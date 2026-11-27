@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         }
         None => tracing::warn!("no Access links are configured: anyone can use bt"),
     }
+    let app = app.layer(axum::middleware::map_response(security_headers));
     let addr = settings.addr;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -107,6 +108,30 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The Content Security Policy of every response.
+///
+/// Only bt's own files load; `blob:` media is the MediaSource the page plays on phones, and no
+/// other site may frame the page.
+const CSP: &str = "default-src 'self'; media-src 'self' blob:; frame-ancestors 'none'";
+
+/// Adds the security headers to `res`; the outermost layer, so even refusals get them.
+async fn security_headers(mut res: Response) -> Response {
+    let headers = res.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(CSP),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    res
 }
 
 /// Serves the endless MP3 broadcast.
