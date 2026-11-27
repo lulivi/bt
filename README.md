@@ -44,26 +44,6 @@ make check  # fmt, clippy, tests, shellcheck, actionlint (what CI runs)
 
 The tests use real ffmpeg and a fake yt-dlp (`tests/fake-yt-dlp.sh`), so they don't need network access.
 
-### Configuration
-
-All environment variables are optional.
-
-| Var | Default | Meaning |
-|---|---|---|
-| `BT_ADDR` | `127.0.0.1:3000` | Address the app listens on |
-| `BT_CACHE_DIR` | `./cache` | Downloaded audio |
-| `BT_STATE_FILE` | `./state.json` | The queue, saved after every change and restored (paused) on startup |
-| `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
-| `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
-| `BT_ACCESS_TOKENS` | unset (anyone can use bt) | Access links, as `name:uuid,name:uuid` |
-| `BT_PUBLIC_URL` | — | The URL listeners open, e.g. `https://bt.example.com`; required with `BT_ACCESS_TOKENS` |
-
-### Access links
-
-To keep bt private, give each person a UUID (`uuidgen`) and set `BT_ACCESS_TOKENS=lorena:<uuid>,luis:<uuid>`. Each person opens their access link, `<BT_PUBLIC_URL>/?token=<uuid>`, once; their browser then stays in for a year. Everyone else gets a 401. To revoke a link, remove its entry and restart bt.
-
-bt logs every access link on startup, so don't share its logs (`make logs`) publicly.
-
 ### Download a release
 
 The [latest release](https://github.com/lulivi/bt/releases/latest) has static Linux binaries for `x86_64` and `aarch64`. They need `ffmpeg`, `yt-dlp` and `deno` in `PATH` (see [Requirements](#requirements)).
@@ -77,19 +57,9 @@ tar -xzf "bt-$target.tar.gz" bt
 ./bt   # then open http://localhost:3000 and press "Connect audio"
 ```
 
-### Deploy
+### More
 
-`make deploy` cross-compiles a static binary and installs it on any Linux host over SSH as a systemd **user** service (`deploy/bt.service`).
-
-On the host, once:
-- put `ffmpeg`, `yt-dlp` and `deno` in `PATH` (`~/.local/bin` works);
-- run `loginctl enable-linger <user>` so the service runs without an open session.
-
-Then, from your machine:
-
-```sh
-make deploy DEPLOY_HOST=<ssh host>   # DEPLOY_TARGET=x86_64-unknown-linux-musl for x86_64 hosts
-make logs DEPLOY_HOST=<ssh host>
-```
-
-The service runs from `~/.local/share/bt` (so audio is cached in `~/.local/share/bt/cache`, and the queue is saved in `~/.local/share/bt/state.json`). Set `BT_*` variables with `systemctl --user edit bt`. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `BT_ADDR`.
+- [Configuration](docs/configuration.md): the `BT_*` variables
+- [Access links](docs/access.md): keep bt private to the people you invite
+- [Deploy](docs/deploy.md): install bt on a host as a systemd service
+- [Releasing](docs/releasing.md)
