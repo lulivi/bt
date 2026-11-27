@@ -28,6 +28,10 @@ _Avoid_: Player, station
 A person with a browser connected to the Radio.
 _Avoid_: User, client
 
+**Operator**:
+The person who runs bt on a host and sets its configuration; not necessarily a Listener.
+_Avoid_: Admin, owner
+
 **Jump**:
 The Radio moving to another Song or another place in the Current entry on a Listener's request (next, prev, seek); pausing and resuming are not Jumps.
 _Avoid_: Skip

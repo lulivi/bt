@@ -523,3 +523,18 @@ async fn the_websocket_needs_the_cookie_and_the_public_origin() {
     let ok = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
     assert_eq!(ws_status(&bt, &ok).await, 101);
 }
+
+#[test]
+fn runs_from_a_config_file_alone() {
+    let bt = Bt::start_with_config(
+        2,
+        &format!("public_url = \"{PUBLIC_URL}\"\n[access]\nlorena = \"{TOKEN}\"\n"),
+    );
+    assert!(bt.dir().join("cache").is_dir());
+    assert!(bt.dir().join("data").is_dir());
+    let (head, _) = get(&bt.addr, "/", 0);
+    assert!(head.starts_with("http/1.1 401"), "{head}");
+    let (head, _) = get(&bt.addr, &format!("/?token={TOKEN}"), 0);
+    assert!(head.starts_with("http/1.1 303"), "{head}");
+    assert!(head.contains("secure"), "{head}");
+}
