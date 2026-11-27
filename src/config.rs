@@ -108,6 +108,9 @@ pub fn load(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Settings> {
     let ffmpeg = or(pick("BT_FFMPEG", "ffmpeg", file.ffmpeg), "ffmpeg");
     let ytdlp = or(pick("BT_YTDLP", "ytdlp", file.ytdlp), "yt-dlp");
 
+    let public_url = pick("BT_PUBLIC_URL", "public_url", file.public_url)
+        .map(|(url, from)| auth::public_url(&url).context(from))
+        .transpose()?;
     let tokens = match (env("BT_ACCESS_TOKENS"), file.access) {
         (Some(tokens), _) => Some((
             auth::parse(&tokens).context("BT_ACCESS_TOKENS")?,
@@ -127,9 +130,9 @@ pub fn load(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Settings> {
     let access = match tokens {
         Some((tokens, from)) => {
             auth::validate(&tokens).with_context(|| from.clone())?;
-            let (url, url_from) = pick("BT_PUBLIC_URL", "public_url", file.public_url)
-                .with_context(|| format!("{from} needs public_url or BT_PUBLIC_URL"))?;
-            Some(Access::new(tokens, &url).context(url_from)?)
+            let url =
+                public_url.with_context(|| format!("{from} needs public_url or BT_PUBLIC_URL"))?;
+            Some(Access::new(tokens, &url))
         }
         None => None,
     };
@@ -283,6 +286,16 @@ mod tests {
                 &format!("public_url = \"ftp://x\"\n[access]\nlorena = \"{A}\""),
                 &[],
                 "config.toml: public_url: must be http or https",
+            ),
+            (
+                "public_url = \"https://x/bt\"",
+                &[],
+                "config.toml: public_url: must not have a path",
+            ),
+            (
+                "",
+                &[("BT_PUBLIC_URL", "x")],
+                "BT_PUBLIC_URL: must be a URL",
             ),
         ] {
             let e = error(load_with(Some(config), vars));

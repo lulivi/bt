@@ -38,26 +38,13 @@ impl Access {
     /// Builds the Access links for `tokens`, which Listeners open at `public_url`.
     ///
     /// `tokens` are each invited person's name and token, already checked with [`validate`];
-    /// `public_url` is just an origin like `https://bt.example.com`, with or without a trailing
-    /// `/`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if `public_url` isn't a URL, isn't `http(s)` or has a path, query or fragment.
-    pub fn new(tokens: Vec<(String, Uuid)>, public_url: &str) -> anyhow::Result<Self> {
-        let url = Url::parse(public_url).context("must be a URL")?;
-        if !matches!(url.scheme(), "http" | "https") {
-            bail!("must be http or https");
-        }
-        // The page asks for `/ws` and `/stream` at the host's root, so bt can't live under a path.
-        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-            bail!("must not have a path, query or fragment");
-        }
-        Ok(Self {
+    /// `public_url` is checked with [`public_url`].
+    pub fn new(tokens: Vec<(String, Uuid)>, public_url: &Url) -> Self {
+        Self {
             tokens,
-            origin: url.origin().ascii_serialization(),
-            secure: url.scheme() == "https",
-        })
+            origin: public_url.origin().ascii_serialization(),
+            secure: public_url.scheme() == "https",
+        }
     }
 
     /// Returns each invited person's name and Access link.
@@ -84,6 +71,25 @@ impl Access {
             });
         bool::from(found).then_some(token)
     }
+}
+
+/// Parses `s` as the URL Listeners open.
+///
+/// `s` is just an origin like `https://bt.example.com`, with or without a trailing `/`.
+///
+/// # Errors
+///
+/// Fails if `s` isn't a URL, isn't `http(s)` or has a path, query or fragment.
+pub fn public_url(s: &str) -> anyhow::Result<Url> {
+    let url = Url::parse(s).context("must be a URL")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("must be http or https");
+    }
+    // The page asks for `/ws` and `/stream` at the host's root, so bt can't live under a path.
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        bail!("must not have a path, query or fragment");
+    }
+    Ok(url)
 }
 
 /// Parses the value of `BT_ACCESS_TOKENS`.
@@ -263,9 +269,9 @@ mod tests {
             "https://bt.example.com/?x=1",
             "https://bt.example.com/#x",
         ] {
-            assert!(Access::new(tokens(), url).is_err(), "{url}");
+            assert!(public_url(url).is_err(), "{url}");
         }
-        let access = Access::new(tokens(), "https://bt.example.com/").unwrap();
+        let access = Access::new(tokens(), &public_url("https://bt.example.com/").unwrap());
         assert!(access.secure);
         assert_eq!(
             access.links().next(),
@@ -275,7 +281,7 @@ mod tests {
 
     #[test]
     fn grants_only_configured_tokens() {
-        let access = Access::new(tokens(), "http://localhost:3000").unwrap();
+        let access = Access::new(tokens(), &public_url("http://localhost:3000").unwrap());
         assert!(!access.secure);
         assert!(access.grants(A).is_some());
         assert_eq!(access.grants(&B.to_uppercase()), Uuid::parse_str(B).ok());
