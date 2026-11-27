@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/lulivi/bt/compare/v0.1.0...v0.1.1) - 2026-11-27
+
+### Added
+
+- read settings from a config file ([#43](https://github.com/lulivi/bt/pull/43))
+- add queue and song looping ([#44](https://github.com/lulivi/bt/pull/44))
+- hear jumps immediately on phones ([#38](https://github.com/lulivi/bt/pull/38))
+- require an access link ([#41](https://github.com/lulivi/bt/pull/41))
+
 ## [0.1.0](https://github.com/lulivi/bt/releases/tag/v0.1.0) - 2026-11-26
 
 ### Added
