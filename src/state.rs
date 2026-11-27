@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::RngExt;
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -28,6 +28,8 @@ pub struct State {
     pub current_index: Option<usize>,
     /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
+    /// What repeats when the Current entry finishes.
+    pub r#loop: LoopMode,
     /// Playback position in the Current entry, in seconds.
     pub position_sec: f64,
     /// Server stream time at which `position_sec` was sampled.
@@ -37,6 +39,52 @@ pub struct State {
     /// Clients mute their buffered (old) audio until their
     /// playback reaches it, so the change is heard cleanly and in sync.
     pub jump_at: Option<f64>,
+}
+
+/// What repeats when the Current entry finishes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopMode {
+    /// Play the Queue in order and go idle at the end.
+    #[default]
+    Off,
+    /// Start the Queue over at the end.
+    Queue,
+    /// Replay the Current entry.
+    Song,
+}
+
+impl LoopMode {
+    /// Reads a loop mode, including the original boolean setting.
+    ///
+    /// # Errors
+    /// Fails if the input is neither a loop mode nor a boolean.
+    pub fn read<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The current and original formats.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Setting {
+            /// A named loop mode.
+            Mode(LoopMode),
+            /// Whether Queue looping was enabled.
+            Enabled(bool),
+        }
+
+        Ok(match Setting::deserialize(deserializer)? {
+            Setting::Mode(mode) => mode,
+            Setting::Enabled(true) => Self::Queue,
+            Setting::Enabled(false) => Self::Off,
+        })
+    }
+
+    /// Advances to the next mode on a press of the Loop button.
+    fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Queue,
+            Self::Queue => Self::Song,
+            Self::Song => Self::Off,
+        }
+    }
 }
 
 /// Changes to the [`State`] that don't need the Actor.
@@ -117,6 +165,10 @@ pub enum Command {
     Prev,
     /// Shuffle the Entries after the Current entry.
     Shuffle,
+    /// Set the Loop mode.
+    SetLoop(LoopMode),
+    /// Advance to the next Loop mode.
+    CycleLoop,
     /// Jump to a position in the Current entry, in seconds.
     Seek(f64),
 }
@@ -169,6 +221,7 @@ pub fn spawn(
     let (state_tx, state_rx) = watch::channel(actor.state.clone());
     tokio::spawn(async move {
         loop {
+            let mut entry_finished = false;
             tokio::select! {
                 Some(cmd) = commands.recv() => match cmd {
                     Command::Add(video_id) => {
@@ -189,14 +242,17 @@ pub fn spawn(
                         actor.state.jump_at = Some(actor.clock.now());
                     }
                     Command::Shuffle => actor.state.shuffle_upcoming(&mut rand::rng()),
+                    Command::SetLoop(mode) => actor.state.r#loop = mode,
+                    Command::CycleLoop => actor.state.r#loop = actor.state.r#loop.cycle(),
                     Command::Seek(position_sec) => actor.seek(position_sec),
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
-                Some(uid) = ended.recv() => actor.ended(uid),
+                Some(uid) = ended.recv() => entry_finished = actor.ended(uid),
                 else => break,
             }
             state_tx.send_if_modified(|published| {
-                if *published == actor.state {
+                // Replaying the same Entry needs a fresh position sample.
+                if !entry_finished && *published == actor.state {
                     return false;
                 }
                 actor.state.position_sec = actor.played().as_secs_f64();
@@ -314,7 +370,7 @@ impl Actor {
             Fetched::Done(_, Err(_)) => {
                 entry.status = Status::Error;
                 if self.state.current_index == Some(index) {
-                    self.load(after(&ready(&self.state.queue), index));
+                    self.load(after(&ready(&self.state.queue), index, false));
                 }
             }
         }
@@ -334,17 +390,22 @@ impl Actor {
         deck.decoder.as_ref().map_or(Duration::ZERO, |d| d.played())
     }
 
-    /// Moves on to the next ready Entry, or goes idle, when the mixer finishes `uid`.
+    /// Replays or moves on when the mixer finishes `uid`, according to the Loop mode.
     ///
-    /// Ignored if `uid` is no longer the Current entry.
-    fn ended(&mut self, uid: Uuid) {
+    /// Returns whether the end report was applied.
+    fn ended(&mut self, uid: Uuid) -> bool {
         let Some(current) = self.state.current_index else {
-            return;
+            return false;
         };
         if self.state.queue[current].uid != uid || self.deck.lock().unwrap().decoder.is_some() {
-            return; // a stale report from an Entry already replaced
+            return false; // a stale report from an Entry already replaced
         }
-        self.load(after(&ready(&self.state.queue), current));
+        let target = match self.state.r#loop {
+            LoopMode::Song => Some(current),
+            mode => after(&ready(&self.state.queue), current, mode == LoopMode::Queue),
+        };
+        self.load(target);
+        true
     }
 
     /// Makes `index` the Current entry and loads it from the start.
@@ -402,11 +463,13 @@ fn ready(queue: &[Entry]) -> Vec<bool> {
     queue.iter().map(|e| e.status == Status::Ready).collect()
 }
 
-/// Returns the first ready Entry after `current`, for when an Entry ends on its own.
-///
-/// Doesn't wrap: after the last one, the Queue has ended.
-fn after(ready: &[bool], current: usize) -> Option<usize> {
-    (current + 1..ready.len()).find(|&i| ready[i])
+/// Returns the next ready Entry, optionally starting over at the end of the Queue.
+fn after(ready: &[bool], current: usize, wrap: bool) -> Option<usize> {
+    let following = (current + 1..ready.len()).find(|&i| ready[i]);
+    if wrap && following.is_none() {
+        return ready.iter().position(|&r| r);
+    }
+    following
 }
 
 /// Returns the Entry to play on `next`.
@@ -414,10 +477,9 @@ fn after(ready: &[bool], current: usize) -> Option<usize> {
 /// That is the following ready Entry, wrapping to the first; from idle, the first ready one.
 /// With only the Current entry ready, that one restarts.
 fn next(ready: &[bool], current: Option<usize>) -> Option<usize> {
-    let n = ready.len();
     match current {
         None => ready.iter().position(|&r| r),
-        Some(i) => (1..=n).map(|k| (i + k) % n).find(|&j| ready[j]),
+        Some(i) => after(ready, i, true),
     }
 }
 
@@ -488,9 +550,18 @@ mod tests {
 
     #[test]
     fn the_queue_ending_on_its_own_does_not_wrap() {
-        assert_eq!(after(&R, 0), Some(2));
-        assert_eq!(after(&R, 4), None);
-        assert_eq!(after(&[true, false], 0), None);
+        assert_eq!(after(&R, 0, false), Some(2));
+        assert_eq!(after(&R, 4, false), None);
+        assert_eq!(after(&[true, false], 0, false), None);
+    }
+
+    #[test]
+    fn loop_starts_over_at_the_first_ready_entry() {
+        assert_eq!(after(&R, 0, true), Some(2));
+        assert_eq!(after(&R, 4, true), Some(0));
+        assert_eq!(after(&[false, true, true], 2, true), Some(1));
+        assert_eq!(after(&[true], 0, true), Some(0));
+        assert_eq!(after(&[false], 0, true), None);
     }
 
     fn shuffle_state(current_index: Option<usize>) -> State {

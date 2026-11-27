@@ -179,6 +179,7 @@ const errorEl = document.getElementById("error");
 const wsStatus = document.getElementById("ws-status");
 const urlInput = document.getElementById("url");
 const toggleBtn = document.getElementById("toggle");
+const loopBtn = document.getElementById("loop");
 const shuffleBtn = document.getElementById("shuffle");
 const progressEl = document.getElementById("playback-progress");
 const trackProgress = document.getElementById("track-progress");
@@ -237,6 +238,7 @@ let wsTimer = null;
 function connectWs() {
   clearTimeout(wsTimer);
   wsTimer = null;
+  loopBtn.disabled = true;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(proto + "//" + location.host + "/ws");
   ws.onopen = () => {
@@ -252,6 +254,7 @@ function connectWs() {
     else if (msg.type === "error") errorEl.textContent = msg.message;
   };
   ws.onclose = () => {
+    loopBtn.disabled = true;
     shuffleBtn.disabled = true;
     wsStatus.textContent = "Reconnecting…";
     wsTimer = setTimeout(connectWs, wsBackoff);
@@ -329,6 +332,9 @@ function render(state) {
   applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  loopBtn.dataset.mode = state.loop;
+  loopBtn.textContent = "Loop " + state.loop;
+  loopBtn.disabled = false;
   const upcomingCount = state.currentIndex == null ? 0 : state.queue.length - state.currentIndex - 1;
   shuffleBtn.disabled = upcomingCount < 2;
   const hasProgress = current && Number.isFinite(state.positionSec) && Number.isFinite(state.at);
@@ -379,6 +385,7 @@ toggleBtn.addEventListener("click", () => {
 });
 document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
 document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
+loopBtn.addEventListener("click", () => send({ type: "cycleLoop" }));
 shuffleBtn.addEventListener("click", () => send({ type: "shuffle" }));
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
