@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::state::{Entry, State, Status};
+use crate::state::{Entry, LoopMode, State, Status};
 use crate::youtube;
 
 /// The contents of the state file.
@@ -29,6 +29,9 @@ pub struct Saved {
     queue: Vec<SavedEntry>,
     /// Position of the Current entry in `queue`; `None` when idle.
     current_index: Option<usize>,
+    /// What repeats when the Current entry finishes.
+    #[serde(default, deserialize_with = "LoopMode::read")]
+    r#loop: LoopMode,
 }
 
 /// An [`Entry`] as saved in the state file.
@@ -63,6 +66,7 @@ impl From<&State> for Saved {
         Saved {
             queue: queue.collect(),
             current_index: state.current_index,
+            r#loop: state.r#loop,
         }
     }
 }
@@ -92,6 +96,7 @@ impl Saved {
             playing: self.queue.is_empty(),
             queue: self.queue.into_iter().map(restored).collect(),
             current_index: self.current_index,
+            r#loop: self.r#loop,
             jump_at: None, // stream time starts over
             ..State::default()
         }
@@ -229,6 +234,13 @@ mod tests {
         assert_eq!(state.queue[1].file, None);
         assert_eq!(state.current_index, Some(1));
         assert!(!state.playing);
+        assert_eq!(state.r#loop, LoopMode::Off);
+    }
+
+    #[test]
+    fn reads_the_original_boolean_loop_setting() {
+        assert_eq!(parse(br#"{"loop":true}"#).unwrap().r#loop, LoopMode::Queue);
+        assert_eq!(parse(br#"{"loop":false}"#).unwrap().r#loop, LoopMode::Off);
     }
 
     #[test]
