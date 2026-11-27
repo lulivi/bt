@@ -27,3 +27,7 @@ _Avoid_: Player, station
 **Listener**:
 A person with a browser connected to the Radio.
 _Avoid_: User, client
+
+**Access link**:
+The personal link that lets one invited person into the Radio; anyone without one is turned away.
+_Avoid_: Invite link, magic link, token

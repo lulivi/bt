@@ -21,6 +21,8 @@ struct Bt {
     addr: String,
     dir: TempDir,
     seconds: u32,
+    /// Extra environment variables `bt` runs with.
+    env: Vec<(&'static str, String)>,
 }
 
 /// Kills `bt`, and prints its stderr if the test is failing.
@@ -40,13 +42,19 @@ impl Bt {
     ///
     /// Each fake Song lasts `seconds`.
     fn start(seconds: u32) -> Self {
+        Self::start_with(seconds, Vec::new())
+    }
+
+    /// Starts `bt` like [`Bt::start`], with the extra environment variables `env`.
+    fn start_with(seconds: u32, env: Vec<(&'static str, String)>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (child, addr) = Self::spawn(&dir, seconds);
+        let (child, addr) = Self::spawn(&dir, seconds, &env);
         Bt {
             child,
             addr,
             dir,
             seconds,
+            env,
         }
     }
 
@@ -57,10 +65,11 @@ impl Bt {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
         between(self.dir.path());
-        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds);
+        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds, &self.env);
     }
 
-    /// Spawns `bt` with its files in `dir` and waits until it listens.
+    /// Spawns `bt` with its files in `dir` and the extra variables `env`, and waits until it
+    /// listens.
     ///
     /// Its stderr (and its ffmpegs') goes to a file, as ffmpeg always complains when `bt` is
     /// killed. Returns the process and the address it listens on.
@@ -68,7 +77,7 @@ impl Bt {
     /// # Panics
     ///
     /// Panics with that stderr if `bt` exits before listening.
-    fn spawn(dir: &TempDir, seconds: u32) -> (Child, String) {
+    fn spawn(dir: &TempDir, seconds: u32, env: &[(&str, String)]) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
         let log = File::options()
             .create(true)
@@ -82,6 +91,7 @@ impl Bt {
             .env("BT_YTDLP", fake)
             .env("FAKE_YTDLP_LOG", dir.path().join("yt-dlp.log"))
             .env("FAKE_YTDLP_SECONDS", seconds.to_string())
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdout(Stdio::piped())
             .stderr(log)
             .spawn()
@@ -195,11 +205,18 @@ fn status(state: &Value, i: usize) -> &str {
 ///
 /// Returns the lower-cased header block and the body bytes read so far.
 fn get(addr: &str, path: &str, body_bytes: usize) -> (String, Vec<u8>) {
+    get_with(addr, path, "", body_bytes)
+}
+
+/// Requests `path` like [`get`], with extra headers.
+///
+/// `headers` are raw header lines, each ending in `\r\n`.
+fn get_with(addr: &str, path: &str, headers: &str, body_bytes: usize) -> (String, Vec<u8>) {
     let mut tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         tcp,
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nRange: bytes=0-1\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nRange: bytes=0-1\r\n{headers}\r\n"
     )
     .unwrap();
     let mut buf = Vec::new();
@@ -538,4 +555,97 @@ async fn seeking_while_paused_moves_playback_for_every_listener() {
     )
     .await
     .expect("first song should finish shortly after resuming");
+}
+
+/// An Access link token for the auth tests.
+const TOKEN: &str = "67e55044-10b1-426f-9247-bb680e5fe0c8";
+
+/// The public URL the auth tests configure.
+const PUBLIC_URL: &str = "https://bt.example.com";
+
+/// Starts `bt` with one Access link, `lorena`'s [`TOKEN`], for [`PUBLIC_URL`].
+fn start_private() -> Bt {
+    Bt::start_with(
+        2,
+        vec![
+            ("BT_ACCESS_TOKENS", format!("lorena:{TOKEN}")),
+            ("BT_PUBLIC_URL", PUBLIC_URL.into()),
+        ],
+    )
+}
+
+/// Opens `/ws` on `bt` with the extra headers `headers` (name and value).
+///
+/// Returns the HTTP status of the handshake: 101 if it was accepted.
+///
+/// # Panics
+///
+/// Panics if a header is invalid or the connection fails for any reason but an HTTP error.
+async fn ws_status(bt: &Bt, headers: &[(&'static str, &str)]) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/ws", bt.addr)
+        .into_client_request()
+        .unwrap();
+    for (k, v) in headers {
+        req.headers_mut().insert(*k, v.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(req).await {
+        Ok((_, res)) => res.status().as_u16(),
+        Err(tokio_tungstenite::tungstenite::Error::Http(res)) => res.status().as_u16(),
+        Err(e) => panic!("connect /ws: {e}"),
+    }
+}
+
+#[test]
+fn opening_an_access_link_sets_the_cookie() {
+    let bt = start_private();
+    let (head, _) = get(&bt.addr, &format!("/?token={TOKEN}"), 0);
+    assert!(head.starts_with("http/1.1 303"), "{head}");
+    assert!(head.contains("location: /\r\n"), "{head}");
+    assert!(
+        head.contains(&format!(
+            "set-cookie: bt_token={TOKEN}; path=/; httponly; samesite=lax; max-age=31536000; secure"
+        )),
+        "{head}"
+    );
+    let cookie = format!("Cookie: bt_token={TOKEN}\r\n");
+    let (head, body) = get_with(&bt.addr, "/", &cookie, 1);
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html>"));
+    let (head, _) = get_with(&bt.addr, "/stream", &cookie, 1);
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+}
+
+#[test]
+fn everything_needs_a_valid_access_link() {
+    let bt = start_private();
+    let wrong = "00000000-0000-0000-0000-000000000000";
+    for (path, headers) in [
+        ("/".to_string(), String::new()),
+        ("/app.js".into(), String::new()),
+        ("/stream".into(), String::new()),
+        ("/ws".into(), String::new()),
+        (format!("/?token={wrong}"), String::new()),
+        ("/".into(), format!("Cookie: bt_token={wrong}\r\n")),
+        (format!("/stream?token={TOKEN}"), String::new()),
+    ] {
+        let (head, body) = get_with(&bt.addr, &path, &headers, 1);
+        assert!(head.starts_with("http/1.1 401"), "{path} {headers}: {head}");
+        assert!(String::from_utf8_lossy(&body).contains("access link"));
+    }
+}
+
+#[tokio::test]
+async fn the_websocket_needs_the_cookie_and_the_public_origin() {
+    let bt = start_private();
+    let cookie = format!("bt_token={TOKEN}");
+    assert_eq!(ws_status(&bt, &[("origin", PUBLIC_URL)]).await, 401);
+    assert_eq!(ws_status(&bt, &[("cookie", &cookie)]).await, 403);
+    let sibling = [
+        ("cookie", cookie.as_str()),
+        ("origin", "https://evil.example.com"),
+    ];
+    assert_eq!(ws_status(&bt, &sibling).await, 403);
+    let ok = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
+    assert_eq!(ws_status(&bt, &ok).await, 101);
 }

@@ -22,20 +22,29 @@ We’re building the experience, one song at a time. The goal: less friction, mo
 
 ---
 
-## 🛠️ Running it
+### 📑 Contents
+
+- [How it works](#-how-it-works)
+- [Requirements](#requirements)
+- [Develop](#develop)
+- [Download a release](#download-a-release)
+- [Docs](#docs): configuration, access links, deploy, releasing
+- [License](#-license)
+
+## 📻 How it works
 
 bt is an internet radio: the server downloads each song's audio with `yt-dlp`, plays the shared queue itself and broadcasts one MP3 stream that every listener's browser plays ([why](docs/adr/0001-server-side-radio.md)).
 
 > Extracting audio with yt-dlp goes against YouTube's Terms of Service. This is for private use, at your own risk. Keep yt-dlp up to date (`yt-dlp -U`).
 
-### Requirements
+## Requirements
 
 - [rustup](https://rustup.rs) (the toolchain in `rust-toolchain.toml` installs itself)
 - `ffmpeg`
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp#installation) (the standalone release build) and [`deno`](https://deno.com) (yt-dlp needs a JS runtime for YouTube)
 - For `make check`: `shellcheck` and [`actionlint`](https://github.com/rhysd/actionlint)
 
-### Develop
+## Develop
 
 ```sh
 make run    # then open http://localhost:3000 and press "Connect audio"
@@ -44,19 +53,7 @@ make check  # fmt, clippy, tests, shellcheck, actionlint (what CI runs)
 
 The tests use real ffmpeg and a fake yt-dlp (`tests/fake-yt-dlp.sh`), so they don't need network access.
 
-### Configuration
-
-All environment variables are optional.
-
-| Var | Default | Meaning |
-|---|---|---|
-| `BT_ADDR` | `127.0.0.1:3000` | Address the app listens on |
-| `BT_CACHE_DIR` | `./cache` | Downloaded audio |
-| `BT_STATE_FILE` | `./state.json` | The queue, saved after every change and restored (paused) on startup |
-| `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
-| `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
-
-### Download a release
+## Download a release
 
 The [latest release](https://github.com/lulivi/bt/releases/latest) has static Linux binaries for `x86_64` and `aarch64`. They need `ffmpeg`, `yt-dlp` and `deno` in `PATH` (see [Requirements](#requirements)).
 
@@ -69,19 +66,13 @@ tar -xzf "bt-$target.tar.gz" bt
 ./bt   # then open http://localhost:3000 and press "Connect audio"
 ```
 
-### Deploy
+## Docs
 
-`make deploy` cross-compiles a static binary and installs it on any Linux host over SSH as a systemd **user** service (`deploy/bt.service`).
+- [Configuration](docs/configuration.md): the `BT_*` variables
+- [Access links](docs/access.md): keep bt private to the people you invite
+- [Deploy](docs/deploy.md): install bt on a host as a systemd service
+- [Releasing](docs/releasing.md)
 
-On the host, once:
-- put `ffmpeg`, `yt-dlp` and `deno` in `PATH` (`~/.local/bin` works);
-- run `loginctl enable-linger <user>` so the service runs without an open session.
+## 📄 License
 
-Then, from your machine:
-
-```sh
-make deploy DEPLOY_HOST=<ssh host>   # DEPLOY_TARGET=x86_64-unknown-linux-musl for x86_64 hosts
-make logs DEPLOY_HOST=<ssh host>
-```
-
-The service runs from `~/.local/share/bt` (so audio is cached in `~/.local/share/bt/cache`, and the queue is saved in `~/.local/share/bt/state.json`). Set `BT_*` variables with `systemctl --user edit bt`. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `BT_ADDR`.
+[MIT](LICENSE) © 2026 Lorena Jiménez, Luis Liñán
