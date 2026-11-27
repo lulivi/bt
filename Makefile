@@ -20,6 +20,7 @@ check:
 	cargo test
 	shellcheck tests/*.sh
 	actionlint
+	@echo "Checking SPDX headers"
 	@git rev-parse --is-inside-work-tree >/dev/null
 	@missing=$$(for tag in 'SPDX[-]FileCopyrightText:' 'SPDX[-]License-Identifier:'; do \
 		git grep -L "$$tag" -- $(NO_HEADER); done | sort -u); \
