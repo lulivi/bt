@@ -6,7 +6,6 @@
 DEPLOY_HOST ?= bt
 DEPLOY_TARGET ?= aarch64-unknown-linux-musl
 RELEASE_BIN := target/$(DEPLOY_TARGET)/release/bt
-# Docker runs the host's architecture, which macOS calls arm64.
 DOCKER_TARGET := $(subst arm64,aarch64,$(shell uname -m))-unknown-linux-musl
 
 # Files that need no SPDX header. The [-] in the check keeps the Makefile from matching itself.
@@ -29,7 +28,6 @@ check:
 build-release:
 	cargo build --release --target $(DEPLOY_TARGET)
 
-# Upload as bt.new, then rename: overwriting a running binary fails with "Text file busy".
 deploy: build-release
 	ssh $(DEPLOY_HOST) 'mkdir -p ~/.local/bin ~/.local/share/bt ~/.config/systemd/user'
 	scp $(RELEASE_BIN) $(DEPLOY_HOST):.local/bin/bt.new
@@ -40,7 +38,6 @@ deploy: build-release
 logs:
 	ssh $(DEPLOY_HOST) 'journalctl --user -u bt -f'
 
-# --user so the files in ./data are yours.
 docker-run:
 	cargo build --release --target $(DOCKER_TARGET)
 	docker build --build-arg TARGET=$(DOCKER_TARGET) -t bt:dev .
