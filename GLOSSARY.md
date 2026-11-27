@@ -28,6 +28,10 @@ _Avoid_: Player, station
 A person with a browser connected to the Radio.
 _Avoid_: User, client
 
+**Jump**:
+The Radio moving to another Song or another place in the Current entry on a Listener's request (next, prev, seek); pausing and resuming are not Jumps.
+_Avoid_: Skip
+
 **Access link**:
 The personal link that lets one invited person into the Radio; anyone without one is turned away.
 _Avoid_: Invite link, magic link, token
