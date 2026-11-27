@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Bt, get, status};
+use common::{Bt, get, get_with, status};
 use serde_json::{Value, json};
 
 #[test]
@@ -331,4 +331,97 @@ async fn seeking_while_paused_moves_playback_for_every_listener() {
     )
     .await
     .expect("first song should finish shortly after resuming");
+}
+
+/// An Access link token for the auth tests.
+const TOKEN: &str = "67e55044-10b1-426f-9247-bb680e5fe0c8";
+
+/// The public URL the auth tests configure.
+const PUBLIC_URL: &str = "https://bt.example.com";
+
+/// Starts `bt` with one Access link, `lorena`'s [`TOKEN`], for [`PUBLIC_URL`].
+fn start_private() -> Bt {
+    Bt::start_with(
+        2,
+        vec![
+            ("BT_ACCESS_TOKENS", format!("lorena:{TOKEN}")),
+            ("BT_PUBLIC_URL", PUBLIC_URL.into()),
+        ],
+    )
+}
+
+/// Opens `/ws` on `bt` with the extra headers `headers` (name and value).
+///
+/// Returns the HTTP status of the handshake: 101 if it was accepted.
+///
+/// # Panics
+///
+/// Panics if a header is invalid or the connection fails for any reason but an HTTP error.
+async fn ws_status(bt: &Bt, headers: &[(&'static str, &str)]) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/ws", bt.addr)
+        .into_client_request()
+        .unwrap();
+    for (k, v) in headers {
+        req.headers_mut().insert(*k, v.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(req).await {
+        Ok((_, res)) => res.status().as_u16(),
+        Err(tokio_tungstenite::tungstenite::Error::Http(res)) => res.status().as_u16(),
+        Err(e) => panic!("connect /ws: {e}"),
+    }
+}
+
+#[test]
+fn opening_an_access_link_sets_the_cookie() {
+    let bt = start_private();
+    let (head, _) = get(&bt.addr, &format!("/?token={TOKEN}"), 0);
+    assert!(head.starts_with("http/1.1 303"), "{head}");
+    assert!(head.contains("location: /\r\n"), "{head}");
+    assert!(
+        head.contains(&format!(
+            "set-cookie: bt_token={TOKEN}; path=/; httponly; samesite=lax; max-age=31536000; secure"
+        )),
+        "{head}"
+    );
+    let cookie = format!("Cookie: bt_token={TOKEN}\r\n");
+    let (head, body) = get_with(&bt.addr, "/", &cookie, 1);
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html>"));
+    let (head, _) = get_with(&bt.addr, "/stream", &cookie, 1);
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+}
+
+#[test]
+fn everything_needs_a_valid_access_link() {
+    let bt = start_private();
+    let wrong = "00000000-0000-0000-0000-000000000000";
+    for (path, headers) in [
+        ("/".to_string(), String::new()),
+        ("/app.js".into(), String::new()),
+        ("/stream".into(), String::new()),
+        ("/ws".into(), String::new()),
+        (format!("/?token={wrong}"), String::new()),
+        ("/".into(), format!("Cookie: bt_token={wrong}\r\n")),
+        (format!("/stream?token={TOKEN}"), String::new()),
+    ] {
+        let (head, body) = get_with(&bt.addr, &path, &headers, 1);
+        assert!(head.starts_with("http/1.1 401"), "{path} {headers}: {head}");
+        assert!(String::from_utf8_lossy(&body).contains("access link"));
+    }
+}
+
+#[tokio::test]
+async fn the_websocket_needs_the_cookie_and_the_public_origin() {
+    let bt = start_private();
+    let cookie = format!("bt_token={TOKEN}");
+    assert_eq!(ws_status(&bt, &[("origin", PUBLIC_URL)]).await, 401);
+    assert_eq!(ws_status(&bt, &[("cookie", &cookie)]).await, 403);
+    let sibling = [
+        ("cookie", cookie.as_str()),
+        ("origin", "https://evil.example.com"),
+    ];
+    assert_eq!(ws_status(&bt, &sibling).await, 403);
+    let ok = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
+    assert_eq!(ws_status(&bt, &ok).await, 101);
 }

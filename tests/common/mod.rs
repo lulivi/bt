@@ -29,6 +29,8 @@ pub struct Bt {
     dir: TempDir,
     /// How long each fake Song lasts.
     seconds: u32,
+    /// Extra environment variables `bt` runs with.
+    env: Vec<(&'static str, String)>,
 }
 
 /// Kills `bt`, and prints its stderr if the test is failing.
@@ -48,13 +50,19 @@ impl Bt {
     ///
     /// Each fake Song lasts `seconds`.
     pub fn start(seconds: u32) -> Self {
+        Self::start_with(seconds, Vec::new())
+    }
+
+    /// Starts `bt` like [`Bt::start`], with the extra environment variables `env`.
+    pub fn start_with(seconds: u32, env: Vec<(&'static str, String)>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (child, addr) = Self::spawn(&dir, seconds, "127.0.0.1:0");
+        let (child, addr) = Self::spawn(&dir, seconds, "127.0.0.1:0", &env);
         Bt {
             child,
             addr,
             dir,
             seconds,
+            env,
         }
     }
 
@@ -65,10 +73,11 @@ impl Bt {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
         between(self.dir.path());
-        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds, &self.addr);
+        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds, &self.addr, &self.env);
     }
 
-    /// Spawns `bt` with its files in `dir` and waits until it listens on `addr`.
+    /// Spawns `bt` with its files in `dir` and the extra variables `env`, and waits until it
+    /// listens on `addr`.
     ///
     /// Its stderr (and its ffmpegs') goes to a file, as ffmpeg always complains when `bt` is
     /// killed. Returns the process and the address it listens on.
@@ -76,7 +85,7 @@ impl Bt {
     /// # Panics
     ///
     /// Panics with that stderr if `bt` exits before listening.
-    fn spawn(dir: &TempDir, seconds: u32, addr: &str) -> (Child, String) {
+    fn spawn(dir: &TempDir, seconds: u32, addr: &str, env: &[(&str, String)]) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
         let log = File::options()
             .create(true)
@@ -90,6 +99,7 @@ impl Bt {
             .env("BT_YTDLP", fake)
             .env("FAKE_YTDLP_LOG", dir.path().join("yt-dlp.log"))
             .env("FAKE_YTDLP_SECONDS", seconds.to_string())
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdout(Stdio::piped())
             .stderr(log)
             .spawn()
@@ -204,11 +214,18 @@ pub fn status(state: &Value, i: usize) -> &str {
 ///
 /// Returns the lower-cased header block and the body bytes read so far.
 pub fn get(addr: &str, path: &str, body_bytes: usize) -> (String, Vec<u8>) {
+    get_with(addr, path, "", body_bytes)
+}
+
+/// Requests `path` like [`get`], with extra headers.
+///
+/// `headers` are raw header lines, each ending in `\r\n`.
+pub fn get_with(addr: &str, path: &str, headers: &str, body_bytes: usize) -> (String, Vec<u8>) {
     let mut tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         tcp,
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nRange: bytes=0-1\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nRange: bytes=0-1\r\n{headers}\r\n"
     )
     .unwrap();
     let mut buf = Vec::new();
