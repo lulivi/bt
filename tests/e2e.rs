@@ -84,6 +84,69 @@ async fn pasted_links_play_in_sequence() {
 }
 
 #[tokio::test]
+async fn loop_is_shared_restored_and_restarts_the_queue() {
+    let mut bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    assert_eq!(ws.recv().await["loop"], false);
+    ws.send(json!({"type": "pause"})).await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    ws.until("both entries ready", |s| {
+        (0..2).all(|i| status(s, i) == "ready")
+    })
+    .await;
+    ws.send(json!({"type": "setLoop", "loop": true})).await;
+    bt.saved("loop enabled and both entries ready", |s| {
+        s["loop"] == true && s["queue"][1]["file"].is_string()
+    })
+    .await;
+
+    bt.restart(|_| {});
+    let mut ws = bt.ws().await;
+    let mut friend = bt.ws().await;
+    let restored = ws.recv().await;
+    assert_eq!(restored["loop"], true);
+    assert_eq!(restored["currentIndex"], 0);
+    assert_eq!(restored["playing"], false);
+
+    ws.send(json!({"type": "play"})).await;
+    friend
+        .until("the last entry playing", |s| s["currentIndex"] == 1)
+        .await;
+    friend
+        .until("loop back to the first entry", |s| s["currentIndex"] == 0)
+        .await;
+
+    ws.send(json!({"type": "setLoop", "loop": false})).await;
+    friend
+        .until("loop disabled for both listeners", |s| s["loop"] == false)
+        .await;
+    friend
+        .until("queue idle", |s| s["currentIndex"].is_null())
+        .await;
+}
+
+#[tokio::test]
+async fn a_single_entry_loop_publishes_a_fresh_playback_position() {
+    let bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    ws.send(json!({"type": "setLoop", "loop": true})).await;
+    ws.add("https://youtu.be/aaaaaaaaaaa").await;
+    let first = ws
+        .until("the entry playing", |s| s["currentIndex"] == 0)
+        .await;
+    let at = first["at"].as_f64().unwrap();
+    let replayed = ws
+        .until("the same entry playing again", |s| {
+            s["currentIndex"] == 0 && s["at"].as_f64().is_some_and(|new| new > at + 1.0)
+        })
+        .await;
+    assert_eq!(replayed["queue"][0]["uid"], first["queue"][0]["uid"]);
+    assert!(replayed["positionSec"].as_f64().unwrap() < 1.0);
+}
+
+#[tokio::test]
 async fn invalid_links_are_rejected_without_running_anything() {
     let bt = Bt::start(2);
     let mut ws = bt.ws().await;

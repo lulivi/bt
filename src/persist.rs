@@ -29,6 +29,8 @@ pub struct Saved {
     queue: Vec<SavedEntry>,
     /// Position of the Current entry in `queue`; `None` when idle.
     current_index: Option<usize>,
+    /// Whether the Queue starts over at the end.
+    r#loop: bool,
 }
 
 /// An [`Entry`] as saved in the state file.
@@ -63,6 +65,7 @@ impl From<&State> for Saved {
         Saved {
             queue: queue.collect(),
             current_index: state.current_index,
+            r#loop: state.r#loop,
         }
     }
 }
@@ -92,6 +95,7 @@ impl Saved {
             playing: self.queue.is_empty(),
             queue: self.queue.into_iter().map(restored).collect(),
             current_index: self.current_index,
+            r#loop: self.r#loop,
             jump_at: None, // stream time starts over
             ..State::default()
         }
@@ -229,6 +233,7 @@ mod tests {
         assert_eq!(state.queue[1].file, None);
         assert_eq!(state.current_index, Some(1));
         assert!(!state.playing);
+        assert!(!state.r#loop);
     }
 
     #[test]

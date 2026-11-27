@@ -28,6 +28,8 @@ pub struct State {
     pub current_index: Option<usize>,
     /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
+    /// Whether the Queue starts over at the end.
+    pub r#loop: bool,
     /// Playback position in the Current entry, in seconds.
     pub position_sec: f64,
     /// Server stream time at which `position_sec` was sampled.
@@ -117,6 +119,8 @@ pub enum Command {
     Prev,
     /// Shuffle the Entries after the Current entry.
     Shuffle,
+    /// Set whether the Queue starts over at the end.
+    SetLoop(bool),
     /// Jump to a position in the Current entry, in seconds.
     Seek(f64),
 }
@@ -169,6 +173,7 @@ pub fn spawn(
     let (state_tx, state_rx) = watch::channel(actor.state.clone());
     tokio::spawn(async move {
         loop {
+            let mut entry_finished = false;
             tokio::select! {
                 Some(cmd) = commands.recv() => match cmd {
                     Command::Add(video_id) => {
@@ -189,14 +194,16 @@ pub fn spawn(
                         actor.state.jump_at = Some(actor.clock.now());
                     }
                     Command::Shuffle => actor.state.shuffle_upcoming(&mut rand::rng()),
+                    Command::SetLoop(enabled) => actor.state.r#loop = enabled,
                     Command::Seek(position_sec) => actor.seek(position_sec),
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
-                Some(uid) = ended.recv() => actor.ended(uid),
+                Some(uid) = ended.recv() => entry_finished = actor.ended(uid),
                 else => break,
             }
             state_tx.send_if_modified(|published| {
-                if *published == actor.state {
+                // A single-Entry loop needs a fresh position sample after each replay.
+                if !entry_finished && *published == actor.state {
                     return false;
                 }
                 actor.state.position_sec = actor.played().as_secs_f64();
@@ -314,7 +321,7 @@ impl Actor {
             Fetched::Done(_, Err(_)) => {
                 entry.status = Status::Error;
                 if self.state.current_index == Some(index) {
-                    self.load(after(&ready(&self.state.queue), index));
+                    self.load(after(&ready(&self.state.queue), index, false));
                 }
             }
         }
@@ -334,17 +341,19 @@ impl Actor {
         deck.decoder.as_ref().map_or(Duration::ZERO, |d| d.played())
     }
 
-    /// Moves on to the next ready Entry, or goes idle, when the mixer finishes `uid`.
+    /// Moves on when the mixer finishes `uid`, wrapping if Loop is on.
     ///
-    /// Ignored if `uid` is no longer the Current entry.
-    fn ended(&mut self, uid: Uuid) {
+    /// Returns whether the end report was applied.
+    fn ended(&mut self, uid: Uuid) -> bool {
         let Some(current) = self.state.current_index else {
-            return;
+            return false;
         };
         if self.state.queue[current].uid != uid || self.deck.lock().unwrap().decoder.is_some() {
-            return; // a stale report from an Entry already replaced
+            return false; // a stale report from an Entry already replaced
         }
-        self.load(after(&ready(&self.state.queue), current));
+        let target = after(&ready(&self.state.queue), current, self.state.r#loop);
+        self.load(target);
+        true
     }
 
     /// Makes `index` the Current entry and loads it from the start.
@@ -402,11 +411,13 @@ fn ready(queue: &[Entry]) -> Vec<bool> {
     queue.iter().map(|e| e.status == Status::Ready).collect()
 }
 
-/// Returns the first ready Entry after `current`, for when an Entry ends on its own.
-///
-/// Doesn't wrap: after the last one, the Queue has ended.
-fn after(ready: &[bool], current: usize) -> Option<usize> {
-    (current + 1..ready.len()).find(|&i| ready[i])
+/// Returns the next ready Entry, optionally starting over at the end of the Queue.
+fn after(ready: &[bool], current: usize, wrap: bool) -> Option<usize> {
+    let following = (current + 1..ready.len()).find(|&i| ready[i]);
+    if wrap && following.is_none() {
+        return ready.iter().position(|&r| r);
+    }
+    following
 }
 
 /// Returns the Entry to play on `next`.
@@ -414,10 +425,9 @@ fn after(ready: &[bool], current: usize) -> Option<usize> {
 /// That is the following ready Entry, wrapping to the first; from idle, the first ready one.
 /// With only the Current entry ready, that one restarts.
 fn next(ready: &[bool], current: Option<usize>) -> Option<usize> {
-    let n = ready.len();
     match current {
         None => ready.iter().position(|&r| r),
-        Some(i) => (1..=n).map(|k| (i + k) % n).find(|&j| ready[j]),
+        Some(i) => after(ready, i, true),
     }
 }
 
@@ -488,9 +498,18 @@ mod tests {
 
     #[test]
     fn the_queue_ending_on_its_own_does_not_wrap() {
-        assert_eq!(after(&R, 0), Some(2));
-        assert_eq!(after(&R, 4), None);
-        assert_eq!(after(&[true, false], 0), None);
+        assert_eq!(after(&R, 0, false), Some(2));
+        assert_eq!(after(&R, 4, false), None);
+        assert_eq!(after(&[true, false], 0, false), None);
+    }
+
+    #[test]
+    fn loop_starts_over_at_the_first_ready_entry() {
+        assert_eq!(after(&R, 0, true), Some(2));
+        assert_eq!(after(&R, 4, true), Some(0));
+        assert_eq!(after(&[false, true, true], 2, true), Some(1));
+        assert_eq!(after(&[true], 0, true), Some(0));
+        assert_eq!(after(&[false], 0, true), None);
     }
 
     fn shuffle_state(current_index: Option<usize>) -> State {

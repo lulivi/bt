@@ -297,6 +297,46 @@ async fn seeking_with_the_progress_bar_moves_playback() {
 }
 
 #[tokio::test]
+async fn the_loop_button_follows_the_shared_state() {
+    let bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    let mut chrome = Chrome::start("").await;
+    chrome
+        .call(
+            true,
+            "Page.navigate",
+            json!({"url": format!("http://{}/", bt.addr)}),
+        )
+        .await;
+    let wait = Duration::from_secs(5);
+    chrome
+        .until(
+            "loop available and released",
+            wait,
+            "typeof loopBtn === 'object' && !loopBtn.disabled && loopBtn.getAttribute('aria-pressed') === 'false'",
+        )
+        .await;
+    chrome.eval("loopBtn.click()").await;
+    ws.until("loop enabled", |s| s["loop"] == true).await;
+    chrome
+        .until(
+            "loop pressed",
+            wait,
+            "loopBtn.getAttribute('aria-pressed') === 'true'",
+        )
+        .await;
+
+    ws.send(json!({"type": "setLoop", "loop": false})).await;
+    chrome
+        .until(
+            "loop released",
+            wait,
+            "loopBtn.getAttribute('aria-pressed') === 'false'",
+        )
+        .await;
+}
+
+#[tokio::test]
 async fn pasted_links_show_in_the_queue() {
     let (_bt, _ws, mut chrome) = listening("").await;
     let wait = Duration::from_secs(15);
