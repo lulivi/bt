@@ -13,4 +13,4 @@ make deploy DEPLOY_HOST=<ssh host>   # DEPLOY_TARGET=x86_64-unknown-linux-musl f
 make logs DEPLOY_HOST=<ssh host>
 ```
 
-The service runs from `~/.local/share/bt` (so audio is cached in `~/.local/share/bt/cache`, and the queue is saved in `~/.local/share/bt/state.json`). Set the [`BT_*` variables](configuration.md) with `systemctl --user edit bt`. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `BT_ADDR`.
+Audio is cached in `~/.local/share/bt/cache`, and the queue is saved in `~/.local/share/bt/state.json`. To configure bt, copy [`deploy/config.example.toml`](../deploy/config.example.toml) to `~/.config/bt/config.toml` on the host, edit it (see [Configuration](configuration.md)) and run `systemctl --user restart bt`; `make deploy` never touches that file. If listeners connect from outside your network, put a reverse proxy with HTTPS in front of `addr`.

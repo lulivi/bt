@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+# SPDX-License-Identifier: MIT
+
+# bt's settings: copy to ~/.config/bt/config.toml and edit. Every key is optional; commented-out
+# values show the defaults or examples. See docs/configuration.md.
+
+# Address the app listens on.
+#addr = "127.0.0.1:3000"
+
+# Downloaded audio, and the saved queue. Use absolute paths: `~` is not expanded.
+#cache_dir = "/home/<user>/.local/share/bt/cache"
+#state_file = "/home/<user>/.local/share/bt/state.json"
+
+# The binaries, from PATH by default.
+#ffmpeg = "ffmpeg"
+#ytdlp = "yt-dlp"
+
+# The origin listeners open, without a path; required with [access].
+#public_url = "https://bt.example.com"
+
+# Each invited person's name and Access link token (`uuidgen`). Without this table, anyone can
+# use bt.
+#[access]
+#lorena = "<uuid>"
+#luis = "<uuid>"

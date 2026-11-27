@@ -68,7 +68,7 @@ tar -xzf "bt-$target.tar.gz" bt
 
 ## Docs
 
-- [Configuration](docs/configuration.md): the `BT_*` variables
+- [Configuration](docs/configuration.md): the config file and the `BT_*` variables
 - [Access links](docs/access.md): keep bt private to the people you invite
 - [Deploy](docs/deploy.md): install bt on a host as a systemd service
 - [Releasing](docs/releasing.md)
