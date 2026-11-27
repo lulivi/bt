@@ -105,8 +105,28 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    // Not a graceful shutdown: `/stream` and `/ws` never close, so it would wait forever, and the
+    // Queue is already saved after every change.
+    tokio::select! {
+        served = axum::serve(listener, app) => served?,
+        signal = stop_signal() => tracing::info!("{}, stopping", signal?),
+    }
     Ok(())
+}
+
+/// Waits for SIGINT (Ctrl-C) or SIGTERM (`docker stop`, `systemctl stop`) and returns its name.
+///
+/// # Errors
+///
+/// Fails if the signal handlers can't be installed.
+async fn stop_signal() -> anyhow::Result<&'static str> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut int = signal(SignalKind::interrupt())?;
+    let mut term = signal(SignalKind::terminate())?;
+    Ok(tokio::select! {
+        _ = int.recv() => "SIGINT",
+        _ = term.recv() => "SIGTERM",
+    })
 }
 
 /// Serves the endless MP3 broadcast.

@@ -538,3 +538,11 @@ fn runs_from_a_config_file_alone() {
     assert!(head.starts_with("http/1.1 303"), "{head}");
     assert!(head.contains("secure"), "{head}");
 }
+
+#[test]
+fn exits_on_ctrl_c_and_sigterm() {
+    for sig in ["INT", "TERM"] {
+        let mut bt = Bt::start(2);
+        assert!(bt.stop(sig).success(), "SIG{sig}");
+    }
+}
