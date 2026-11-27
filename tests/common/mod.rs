@@ -31,6 +31,8 @@ pub struct Bt {
     seconds: u32,
     /// Extra environment variables `bt` runs with.
     env: Vec<(&'static str, String)>,
+    /// Extra lines for a config file that replaces the `BT_*` variables, if any.
+    config: Option<String>,
 }
 
 /// Kills `bt`, and prints its stderr if the test is failing.
@@ -55,14 +57,29 @@ impl Bt {
 
     /// Starts `bt` like [`Bt::start`], with the extra environment variables `env`.
     pub fn start_with(seconds: u32, env: Vec<(&'static str, String)>) -> Self {
+        Self::start_from(seconds, env, None)
+    }
+
+    /// Starts `bt` like [`Bt::start`], configured by a config file alone, with no `BT_*`
+    /// variables.
+    ///
+    /// The file sets the address, files and yt-dlp, followed by the TOML in `extra`.
+    pub fn start_with_config(seconds: u32, extra: &str) -> Self {
+        Self::start_from(seconds, Vec::new(), Some(extra.into()))
+    }
+
+    /// Starts `bt` with the extra variables `env` and, if `config` is set, a config file with
+    /// those extra lines instead of the `BT_*` variables.
+    fn start_from(seconds: u32, env: Vec<(&'static str, String)>, config: Option<String>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (child, addr) = Self::spawn(&dir, seconds, "127.0.0.1:0", &env);
+        let (child, addr) = Self::spawn(&dir, seconds, "127.0.0.1:0", &env, config.as_deref());
         Bt {
             child,
             addr,
             dir,
             seconds,
             env,
+            config,
         }
     }
 
@@ -73,11 +90,21 @@ impl Bt {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
         between(self.dir.path());
-        (self.child, self.addr) = Self::spawn(&self.dir, self.seconds, &self.addr, &self.env);
+        (self.child, self.addr) = Self::spawn(
+            &self.dir,
+            self.seconds,
+            &self.addr,
+            &self.env,
+            self.config.as_deref(),
+        );
     }
 
     /// Spawns `bt` with its files in `dir` and the extra variables `env`, and waits until it
     /// listens on `addr`.
+    ///
+    /// With `config`, the address, files and yt-dlp go in `$XDG_CONFIG_HOME/bt/config.toml`,
+    /// followed by `config`, instead of in `BT_*` variables. Either way, the developer's own
+    /// config file is never read.
     ///
     /// Its stderr (and its ffmpegs') goes to a file, as ffmpeg always complains when `bt` is
     /// killed. Returns the process and the address it listens on.
@@ -85,18 +112,39 @@ impl Bt {
     /// # Panics
     ///
     /// Panics with that stderr if `bt` exits before listening.
-    fn spawn(dir: &TempDir, seconds: u32, addr: &str, env: &[(&str, String)]) -> (Child, String) {
+    fn spawn(
+        dir: &TempDir,
+        seconds: u32,
+        addr: &str,
+        env: &[(&str, String)],
+        config: Option<&str>,
+    ) -> (Child, String) {
         let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-yt-dlp.sh");
+        let settings = [
+            ("BT_ADDR", "addr", addr.to_string()),
+            ("BT_CACHE_DIR", "cache_dir", path(dir, "cache")),
+            ("BT_STATE_FILE", "state_file", path(dir, "data/state.json")),
+            ("BT_YTDLP", "ytdlp", fake.into()),
+        ];
+        let xdg = dir.path().join("config");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_bt"));
+        cmd.env("XDG_CONFIG_HOME", &xdg).env_remove("BT_CONFIG");
+        if let Some(extra) = config {
+            let mut toml = String::new();
+            for (_, key, value) in &settings {
+                toml += &format!("{key} = {value:?}\n");
+            }
+            std::fs::create_dir_all(xdg.join("bt")).unwrap();
+            std::fs::write(xdg.join("bt/config.toml"), toml + extra).unwrap();
+        } else {
+            cmd.envs(settings.iter().map(|(var, _, value)| (var, value)));
+        }
         let log = File::options()
             .create(true)
             .append(true)
             .open(dir.path().join("stderr.log"))
             .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_bt"))
-            .env("BT_ADDR", addr)
-            .env("BT_CACHE_DIR", dir.path().join("cache"))
-            .env("BT_STATE_FILE", dir.path().join("data/state.json"))
-            .env("BT_YTDLP", fake)
+        let mut child = cmd
             .env("FAKE_YTDLP_LOG", dir.path().join("yt-dlp.log"))
             .env("FAKE_YTDLP_SECONDS", seconds.to_string())
             .envs(env.iter().map(|(k, v)| (k, v)))
@@ -117,6 +165,11 @@ impl Bt {
         // Keep draining the log so bt never blocks on a full pipe.
         std::thread::spawn(move || lines.for_each(drop));
         (child, addr)
+    }
+
+    /// Returns the directory with its cache, state file and logs.
+    pub fn dir(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Returns the file where the fake yt-dlp logs its calls.
@@ -197,6 +250,11 @@ impl Ws {
     pub async fn add(&mut self, url: &str) {
         self.send(json!({"type": "add", "url": url})).await;
     }
+}
+
+/// Returns the path `rel` in `dir`, as a string.
+fn path(dir: &TempDir, rel: &str) -> String {
+    dir.path().join(rel).to_str().unwrap().into()
 }
 
 /// Returns what the `bt` with its files in `dir` has written to stderr, across restarts.

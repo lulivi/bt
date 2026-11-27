@@ -35,35 +35,29 @@ pub struct Access {
 
 /// Configuration and checks.
 impl Access {
-    /// Builds the Access links from the values of `BT_ACCESS_TOKENS` and `BT_PUBLIC_URL`.
+    /// Builds the Access links for `tokens`, which Listeners open at `public_url`.
     ///
-    /// `tokens` is `name:uuid,name:uuid` (see [`parse`]); `public_url` is the URL Listeners open,
-    /// just an origin like `https://bt.example.com`, with or without a trailing `/`. Returns `None` if `tokens` is unset, which leaves bt open
-    /// to anyone; `public_url` is then ignored.
+    /// `tokens` are each invited person's name and token, already checked with [`validate`];
+    /// `public_url` is just an origin like `https://bt.example.com`, with or without a trailing
+    /// `/`.
     ///
     /// # Errors
     ///
-    /// Fails if the tokens are invalid (see [`parse`]), or the public URL is missing, isn't
-    /// `http(s)` or has a path, query or fragment.
-    pub fn new(tokens: Option<&str>, public_url: Option<&str>) -> anyhow::Result<Option<Self>> {
-        let Some(tokens) = tokens else {
-            return Ok(None);
-        };
-        let tokens = parse(tokens).context("BT_ACCESS_TOKENS")?;
-        let url = public_url.context("BT_PUBLIC_URL is required with BT_ACCESS_TOKENS")?;
-        let url = Url::parse(url).context("BT_PUBLIC_URL must be a URL")?;
+    /// Fails if `public_url` isn't a URL, isn't `http(s)` or has a path, query or fragment.
+    pub fn new(tokens: Vec<(String, Uuid)>, public_url: &str) -> anyhow::Result<Self> {
+        let url = Url::parse(public_url).context("must be a URL")?;
         if !matches!(url.scheme(), "http" | "https") {
-            bail!("BT_PUBLIC_URL must be http or https");
+            bail!("must be http or https");
         }
         // The page asks for `/ws` and `/stream` at the host's root, so bt can't live under a path.
         if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-            bail!("BT_PUBLIC_URL must not have a path, query or fragment");
+            bail!("must not have a path, query or fragment");
         }
-        Ok(Some(Self {
+        Ok(Self {
             tokens,
             origin: url.origin().ascii_serialization(),
             secure: url.scheme() == "https",
-        }))
+        })
     }
 
     /// Returns each invited person's name and Access link.
@@ -95,37 +89,64 @@ impl Access {
 /// Parses the value of `BT_ACCESS_TOKENS`.
 ///
 /// `s` is `name:uuid,name:uuid`, one entry per invited person; whitespace around names, UUIDs
-/// and entries is ignored. Returns the entries in order.
+/// and entries is ignored. Returns the entries in order, still to be checked with [`validate`];
+/// none if `s` is blank.
 ///
 /// # Errors
 ///
-/// Fails if there are no entries, an entry has no name or no valid UUID, or a name or UUID
-/// appears twice. Errors never include a UUID.
-fn parse(s: &str) -> anyhow::Result<Vec<(String, Uuid)>> {
+/// Fails if an entry has no name or no valid UUID. Errors never include a UUID.
+pub fn parse(s: &str) -> anyhow::Result<Vec<(String, Uuid)>> {
     if s.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    s.split(',')
+        .map(str::trim)
+        .enumerate()
+        .map(|(i, entry)| {
+            let Some((name, t)) = entry.split_once(':') else {
+                bail!("entry {} must be name:uuid", i + 1);
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("entry {} has no name", i + 1);
+            }
+            Ok((name.into(), token(name, t.trim())?))
+        })
+        .collect()
+}
+
+/// Parses `s` as `name`'s token.
+///
+/// # Errors
+///
+/// Fails if `s` is not a UUID; the error doesn't include it.
+pub fn token(name: &str, s: &str) -> anyhow::Result<Uuid> {
+    Uuid::parse_str(s).map_err(|_| anyhow::anyhow!("{name}'s token is not a UUID"))
+}
+
+/// Checks the Access link entries `tokens`, each a name and its token.
+///
+/// # Errors
+///
+/// Fails if there are no entries, an entry has a blank name, or a name or token appears twice.
+/// Errors never include a UUID.
+pub fn validate(tokens: &[(String, Uuid)]) -> anyhow::Result<()> {
+    if tokens.is_empty() {
         bail!("no entries");
     }
-    let mut tokens: Vec<(String, Uuid)> = Vec::new();
-    for (i, entry) in s.split(',').map(str::trim).enumerate() {
-        let Some((name, token)) = entry.split_once(':') else {
-            bail!("entry {} must be name:uuid", i + 1);
-        };
-        let name = name.trim();
-        if name.is_empty() {
+    for (i, (name, token)) in tokens.iter().enumerate() {
+        if name.trim().is_empty() {
             bail!("entry {} has no name", i + 1);
         }
-        let Ok(token) = Uuid::parse_str(token.trim()) else {
-            bail!("{name}'s token is not a UUID");
-        };
-        if tokens.iter().any(|(n, _)| n == name) {
+        let before = &tokens[..i];
+        if before.iter().any(|(n, _)| n == name) {
             bail!("{name} appears twice");
         }
-        if tokens.iter().any(|(_, t)| *t == token) {
+        if before.iter().any(|(_, t)| t == token) {
             bail!("{name} reuses another entry's token");
         }
-        tokens.push((name.into(), token));
     }
-    Ok(tokens)
+    Ok(())
 }
 
 /// Lets a request through only with a valid Access link; the middleware for every route.
@@ -223,39 +244,38 @@ mod tests {
                 "luis reuses another entry's token",
             ),
         ] {
-            assert_eq!(parse(&input).unwrap_err().to_string(), error, "{input:?}");
+            let checked = parse(&input).and_then(|t| validate(&t));
+            assert_eq!(checked.unwrap_err().to_string(), error, "{input:?}");
         }
     }
 
+    /// Returns `lorena`'s and `luis`'s entries, with tokens [`A`] and [`B`].
+    fn tokens() -> Vec<(String, Uuid)> {
+        parse(&format!("lorena:{A},luis:{B}")).unwrap()
+    }
+
     #[test]
-    fn needs_a_public_url_only_with_tokens() {
-        assert!(Access::new(None, None).unwrap().is_none());
-        let tokens = format!("lorena:{A}");
-        assert!(Access::new(Some(&tokens), None).is_err());
+    fn needs_a_public_url_at_the_root() {
         for url in [
+            "bt.example.com",
             "ftp://bt.example.com",
             "https://bt.example.com/bt",
             "https://bt.example.com/?x=1",
             "https://bt.example.com/#x",
         ] {
-            assert!(Access::new(Some(&tokens), Some(url)).is_err(), "{url}");
+            assert!(Access::new(tokens(), url).is_err(), "{url}");
         }
-        let access = Access::new(Some(&tokens), Some("https://bt.example.com/"))
-            .unwrap()
-            .unwrap();
+        let access = Access::new(tokens(), "https://bt.example.com/").unwrap();
         assert!(access.secure);
         assert_eq!(
-            access.links().collect::<Vec<_>>(),
-            [("lorena", format!("https://bt.example.com/?token={A}"))]
+            access.links().next(),
+            Some(("lorena", format!("https://bt.example.com/?token={A}")))
         );
     }
 
     #[test]
     fn grants_only_configured_tokens() {
-        let tokens = format!("lorena:{A},luis:{B}");
-        let access = Access::new(Some(&tokens), Some("http://localhost:3000"))
-            .unwrap()
-            .unwrap();
+        let access = Access::new(tokens(), "http://localhost:3000").unwrap();
         assert!(!access.secure);
         assert!(access.grants(A).is_some());
         assert_eq!(access.grants(&B.to_uppercase()), Uuid::parse_str(B).ok());

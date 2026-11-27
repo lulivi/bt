@@ -4,14 +4,13 @@
 //! bt, a shared radio: the web server, its configuration and the Listeners' connections.
 
 mod auth;
+mod config;
 mod persist;
 mod radio;
 mod state;
 mod youtube;
 
 use std::io::IsTerminal;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -45,7 +44,7 @@ struct App {
     clock: radio::Clock,
 }
 
-/// Starts the Radio, the state actor and the web server, configured by the `BT_*` variables.
+/// Starts the Radio, the state actor and the web server, configured by the config file and the `BT_*` variables.
 ///
 /// # Errors
 ///
@@ -56,27 +55,23 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_ansi(std::io::stdout().is_terminal())
         .init();
-    let var = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
-    let addr: SocketAddr = var("BT_ADDR", "127.0.0.1:3000")
-        .parse()
-        .context("BT_ADDR must be <ip>:<port>")?;
+    let settings = config::load(|name| std::env::var(name).ok())?;
+    match &settings.file {
+        Some(file) => tracing::info!("settings from {}", file.display()),
+        None => tracing::info!("no config file: settings from defaults and BT_* variables"),
+    }
     let config = state::Config {
-        ffmpeg: var("BT_FFMPEG", "ffmpeg"),
-        ytdlp: var("BT_YTDLP", "yt-dlp"),
-        cache_dir: PathBuf::from(var("BT_CACHE_DIR", "cache")),
+        ffmpeg: settings.ffmpeg,
+        ytdlp: settings.ytdlp,
+        cache_dir: settings.cache_dir,
     };
     std::fs::create_dir_all(&config.cache_dir)
         .with_context(|| format!("creating {}", config.cache_dir.display()))?;
-    let state_file = PathBuf::from(var("BT_STATE_FILE", "state.json"));
+    let state_file = settings.state_file;
     if let Some(dir) = state_file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let restored = persist::load(&state_file)?;
-    let env = |name: &str| std::env::var(name).ok();
-    let access = auth::Access::new(
-        env("BT_ACCESS_TOKENS").as_deref(),
-        env("BT_PUBLIC_URL").as_deref(),
-    )?;
 
     let (ended_tx, ended_rx) = mpsc::unbounded_channel();
     let (mp3, deck, clock) = radio::start(&config.ffmpeg, ended_tx)?;
@@ -93,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             state,
             clock,
         });
-    match access {
+    match settings.access {
         Some(access) => {
             for (name, link) in access.links() {
                 tracing::info!("access link for {name}: {link}");
@@ -103,8 +98,9 @@ async fn main() -> anyhow::Result<()> {
                 auth::check,
             ));
         }
-        None => tracing::warn!("BT_ACCESS_TOKENS is unset: anyone can use bt"),
+        None => tracing::warn!("no Access links are configured: anyone can use bt"),
     }
+    let addr = settings.addr;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
