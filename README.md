@@ -27,6 +27,7 @@ We’re building the experience, one song at a time. The goal: less friction, mo
 - [How it works](#-how-it-works)
 - [Requirements](#requirements)
 - [Develop](#develop)
+- [Run in Docker](#run-in-docker)
 - [Download a release](#download-a-release)
 - [Docs](#docs): configuration, access links, deploy, releasing
 - [License](#-license)
@@ -52,6 +53,21 @@ make check  # fmt, clippy, tests, shellcheck, actionlint (what CI runs)
 ```
 
 The tests use real ffmpeg and a fake yt-dlp (`tests/fake-yt-dlp.sh`), so they don't need network access. The browser tests (`tests/web.rs`) also need Chrome: `google-chrome` in `PATH`, or its binary in `CHROME`.
+
+## Run in Docker
+
+To try bt without installing ffmpeg, yt-dlp and deno, you need just [rustup](https://rustup.rs) and Docker (on Linux or macOS):
+
+```sh
+make docker-run   # then open http://localhost:3000 and press "Connect audio"
+```
+
+It builds a static bt, puts it in an image with ffmpeg, deno and yt-dlp (updated on every start), and keeps the queue and downloaded audio in `./data`. Ctrl-C stops it. To [configure](docs/configuration.md) it, run the image with `BT_*` variables:
+
+```sh
+docker run --rm -p 127.0.0.1:3000:3000 -v ./data:/data --user "$(id -u):$(id -g)" \
+  -e BT_PUBLIC_URL=http://localhost:3000 -e BT_ACCESS_TOKENS="lorena:$(uuidgen)" bt:dev
+```
 
 ## Download a release
 

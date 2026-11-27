@@ -167,6 +167,25 @@ impl Bt {
         (child, addr)
     }
 
+    /// Sends `bt` the signal `sig` (as `kill` names it, e.g. `TERM`) and waits (up to 5 s) for it
+    /// to exit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bt` is still running after 5 s.
+    pub fn stop(&mut self, sig: &str) -> std::process::ExitStatus {
+        let pid = self.child.id().to_string();
+        let sent = Command::new("kill").args(["-s", sig, &pid]).status();
+        assert!(sent.unwrap().success(), "kill -s {sig} {pid}");
+        for _ in 0..100 {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("bt still running 5 s after SIG{sig}");
+    }
+
     /// Returns the directory with its cache, state file and logs.
     pub fn dir(&self) -> &Path {
         self.dir.path()
