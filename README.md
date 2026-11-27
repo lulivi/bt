@@ -55,6 +55,14 @@ All environment variables are optional.
 | `BT_STATE_FILE` | `./state.json` | The queue, saved after every change and restored (paused) on startup |
 | `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
 | `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
+| `BT_ACCESS_TOKENS` | unset (anyone can use bt) | Access links, as `name:uuid,name:uuid` |
+| `BT_PUBLIC_URL` | — | The URL listeners open, e.g. `https://bt.example.com`; required with `BT_ACCESS_TOKENS` |
+
+### Access links
+
+To keep bt private, give each person a UUID (`uuidgen`) and set `BT_ACCESS_TOKENS=lorena:<uuid>,luis:<uuid>`. Each person opens their access link, `<BT_PUBLIC_URL>/?token=<uuid>`, once; their browser then stays in for a year. Everyone else gets a 401. To revoke a link, remove its entry and restart bt.
+
+bt logs every access link on startup, so don't share its logs (`make logs`) publicly.
 
 ### Download a release
 
