@@ -38,13 +38,13 @@ impl Access {
     /// Builds the Access links from the values of `BT_ACCESS_TOKENS` and `BT_PUBLIC_URL`.
     ///
     /// `tokens` is `name:uuid,name:uuid` (see [`parse`]); `public_url` is the URL Listeners open,
-    /// of which only the origin is kept. Returns `None` if `tokens` is unset, which leaves bt open
+    /// just an origin like `https://bt.example.com`, with or without a trailing `/`. Returns `None` if `tokens` is unset, which leaves bt open
     /// to anyone; `public_url` is then ignored.
     ///
     /// # Errors
     ///
-    /// Fails if the tokens are invalid (see [`parse`]) or the public URL is missing or isn't
-    /// `http(s)`.
+    /// Fails if the tokens are invalid (see [`parse`]), or the public URL is missing, isn't
+    /// `http(s)` or has a path, query or fragment.
     pub fn new(tokens: Option<&str>, public_url: Option<&str>) -> anyhow::Result<Option<Self>> {
         let Some(tokens) = tokens else {
             return Ok(None);
@@ -54,6 +54,10 @@ impl Access {
         let url = Url::parse(url).context("BT_PUBLIC_URL must be a URL")?;
         if !matches!(url.scheme(), "http" | "https") {
             bail!("BT_PUBLIC_URL must be http or https");
+        }
+        // The page asks for `/ws` and `/stream` at the host's root, so bt can't live under a path.
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            bail!("BT_PUBLIC_URL must not have a path, query or fragment");
         }
         Ok(Some(Self {
             tokens,
@@ -228,8 +232,15 @@ mod tests {
         assert!(Access::new(None, None).unwrap().is_none());
         let tokens = format!("lorena:{A}");
         assert!(Access::new(Some(&tokens), None).is_err());
-        assert!(Access::new(Some(&tokens), Some("ftp://bt.example.com")).is_err());
-        let access = Access::new(Some(&tokens), Some("https://bt.example.com/x"))
+        for url in [
+            "ftp://bt.example.com",
+            "https://bt.example.com/bt",
+            "https://bt.example.com/?x=1",
+            "https://bt.example.com/#x",
+        ] {
+            assert!(Access::new(Some(&tokens), Some(url)).is_err(), "{url}");
+        }
+        let access = Access::new(Some(&tokens), Some("https://bt.example.com/"))
             .unwrap()
             .unwrap();
         assert!(access.secure);

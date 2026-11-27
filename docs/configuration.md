@@ -10,4 +10,4 @@ All environment variables are optional.
 | `BT_FFMPEG` | `ffmpeg` (from `PATH`) | ffmpeg binary |
 | `BT_YTDLP` | `yt-dlp` (from `PATH`) | yt-dlp binary |
 | `BT_ACCESS_TOKENS` | unset (anyone can use bt) | [Access links](access.md), as `name:uuid,name:uuid` |
-| `BT_PUBLIC_URL` | — | The URL listeners open, e.g. `https://bt.example.com`; required with `BT_ACCESS_TOKENS` |
+| `BT_PUBLIC_URL` | — | The origin listeners open, e.g. `https://bt.example.com` (no path: bt runs at the root of its host); required with `BT_ACCESS_TOKENS` |
