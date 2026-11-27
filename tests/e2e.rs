@@ -543,6 +543,23 @@ async fn the_websocket_needs_the_cookie_and_the_public_origin() {
     assert_eq!(ws_status(&bt, &ok).await, 101);
 }
 
+#[tokio::test]
+async fn adds_are_limited_per_access_link() {
+    let bt = start_private();
+    let cookie = format!("bt_token={TOKEN}");
+    let headers = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
+    let (mut a, mut b) = (bt.ws_with(&headers).await, bt.ws_with(&headers).await);
+    for i in 0..10 {
+        let ws = if i % 2 == 0 { &mut a } else { &mut b };
+        ws.add(&format!("https://www.youtube.com/watch?v=aaaaaaaaaa{i}"))
+            .await;
+    }
+    b.until("10 entries", |s| s["queue"][9].is_object()).await;
+    b.add("https://www.youtube.com/watch?v=bbbbbbbbbbb").await;
+    let error = b.until("an error", |m| m["type"] == "error").await;
+    assert_eq!(error["message"], "Too many songs added; wait a minute");
+}
+
 #[test]
 fn runs_from_a_config_file_alone() {
     let bt = Bt::start_with_config(

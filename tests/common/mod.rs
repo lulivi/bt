@@ -198,7 +198,19 @@ impl Bt {
 
     /// Connects a new Listener.
     pub async fn ws(&self) -> Ws {
-        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", self.addr))
+        self.ws_with(&[]).await
+    }
+
+    /// Connects a new Listener whose handshake has the extra headers `headers` (name and value).
+    pub async fn ws_with(&self, headers: &[(&'static str, &str)]) -> Ws {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!("ws://{}/ws", self.addr)
+            .into_client_request()
+            .unwrap();
+        for (k, v) in headers {
+            req.headers_mut().insert(*k, v.parse().unwrap());
+        }
+        let (ws, _) = tokio_tungstenite::connect_async(req)
             .await
             .expect("connect /ws");
         Ws(ws)
