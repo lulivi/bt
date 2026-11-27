@@ -14,6 +14,10 @@ luis = "<uuid>"
 
 bt logs every access link on startup, so don't share its logs (`make logs`) publicly.
 
+Each access link can add 10 songs a minute, across all its tabs and devices.
+
+Wrong links aren't rate-limited: a token is a random UUID, too many possibilities to guess, and behind a proxy every request comes from the proxy's address, so a per-address limit would let one stranger lock everyone out. To cut down scanner noise on a public bt, throttle at the proxy.
+
 ## Behind a reverse proxy
 
-`public_url` must be exactly the origin listeners type (scheme, host and port), because `/ws` only accepts pages loaded from it. If the page loads but never connects, the WebSocket is getting a 403: check that `public_url` matches the address bar. Locally, open `http://localhost:3000`, not `http://127.0.0.1:3000`, if that's what `public_url` says.
+`public_url` must be exactly the origin listeners type (scheme, host and port), because `/ws` only accepts pages loaded from it. If the page loads but never connects, the WebSocket is getting a 403: check that `public_url` matches the address bar. Locally, open `http://localhost:3000`, not `http://127.0.0.1:3000`, if that's what `public_url` says. Your proxy's access log records the access links people open (`/?token=<uuid>`), so keep it private too, or have the proxy leave the query string out.
