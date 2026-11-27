@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::RngExt;
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -28,8 +28,8 @@ pub struct State {
     pub current_index: Option<usize>,
     /// Whether the Radio is not paused; it can be true while idle.
     pub playing: bool,
-    /// Whether the Queue starts over at the end.
-    pub r#loop: bool,
+    /// What repeats when the Current entry finishes.
+    pub r#loop: LoopMode,
     /// Playback position in the Current entry, in seconds.
     pub position_sec: f64,
     /// Server stream time at which `position_sec` was sampled.
@@ -39,6 +39,52 @@ pub struct State {
     /// Clients mute their buffered (old) audio until their
     /// playback reaches it, so the change is heard cleanly and in sync.
     pub jump_at: Option<f64>,
+}
+
+/// What repeats when the Current entry finishes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopMode {
+    /// Play the Queue in order and go idle at the end.
+    #[default]
+    Off,
+    /// Start the Queue over at the end.
+    Queue,
+    /// Replay the Current entry.
+    Song,
+}
+
+impl LoopMode {
+    /// Reads a loop mode, including the original boolean setting.
+    ///
+    /// # Errors
+    /// Fails if the input is neither a loop mode nor a boolean.
+    pub fn read<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The current and original formats.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Setting {
+            /// A named loop mode.
+            Mode(LoopMode),
+            /// Whether Queue looping was enabled.
+            Enabled(bool),
+        }
+
+        Ok(match Setting::deserialize(deserializer)? {
+            Setting::Mode(mode) => mode,
+            Setting::Enabled(true) => Self::Queue,
+            Setting::Enabled(false) => Self::Off,
+        })
+    }
+
+    /// Advances to the next mode on a press of the Loop button.
+    fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Queue,
+            Self::Queue => Self::Song,
+            Self::Song => Self::Off,
+        }
+    }
 }
 
 /// Changes to the [`State`] that don't need the Actor.
@@ -119,8 +165,10 @@ pub enum Command {
     Prev,
     /// Shuffle the Entries after the Current entry.
     Shuffle,
-    /// Set whether the Queue starts over at the end.
-    SetLoop(bool),
+    /// Set the Loop mode.
+    SetLoop(LoopMode),
+    /// Advance to the next Loop mode.
+    CycleLoop,
     /// Jump to a position in the Current entry, in seconds.
     Seek(f64),
 }
@@ -194,7 +242,8 @@ pub fn spawn(
                         actor.state.jump_at = Some(actor.clock.now());
                     }
                     Command::Shuffle => actor.state.shuffle_upcoming(&mut rand::rng()),
-                    Command::SetLoop(enabled) => actor.state.r#loop = enabled,
+                    Command::SetLoop(mode) => actor.state.r#loop = mode,
+                    Command::CycleLoop => actor.state.r#loop = actor.state.r#loop.cycle(),
                     Command::Seek(position_sec) => actor.seek(position_sec),
                 },
                 Some(event) = fetched.recv() => actor.fetched(event),
@@ -202,7 +251,7 @@ pub fn spawn(
                 else => break,
             }
             state_tx.send_if_modified(|published| {
-                // A single-Entry loop needs a fresh position sample after each replay.
+                // Replaying the same Entry needs a fresh position sample.
                 if !entry_finished && *published == actor.state {
                     return false;
                 }
@@ -341,7 +390,7 @@ impl Actor {
         deck.decoder.as_ref().map_or(Duration::ZERO, |d| d.played())
     }
 
-    /// Moves on when the mixer finishes `uid`, wrapping if Loop is on.
+    /// Replays or moves on when the mixer finishes `uid`, according to the Loop mode.
     ///
     /// Returns whether the end report was applied.
     fn ended(&mut self, uid: Uuid) -> bool {
@@ -351,7 +400,10 @@ impl Actor {
         if self.state.queue[current].uid != uid || self.deck.lock().unwrap().decoder.is_some() {
             return false; // a stale report from an Entry already replaced
         }
-        let target = after(&ready(&self.state.queue), current, self.state.r#loop);
+        let target = match self.state.r#loop {
+            LoopMode::Song => Some(current),
+            mode => after(&ready(&self.state.queue), current, mode == LoopMode::Queue),
+        };
         self.load(target);
         true
     }

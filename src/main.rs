@@ -151,11 +151,14 @@ enum ClientMsg {
     Prev,
     /// Shuffle the Entries after the Current entry.
     Shuffle,
-    /// Set whether the Queue starts over at the end.
+    /// Set the Loop mode.
     SetLoop {
-        /// Whether Loop is enabled.
-        r#loop: bool,
+        /// The requested mode.
+        #[serde(deserialize_with = "state::LoopMode::read")]
+        r#loop: state::LoopMode,
     },
+    /// Advance to the next Loop mode.
+    CycleLoop,
     /// Jump to a position in the Current entry.
     #[serde(rename_all = "camelCase")]
     Seek {
@@ -240,6 +243,7 @@ async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
         ClientMsg::Prev => state::Command::Prev,
         ClientMsg::Shuffle => state::Command::Shuffle,
         ClientMsg::SetLoop { r#loop } => state::Command::SetLoop(r#loop),
+        ClientMsg::CycleLoop => state::Command::CycleLoop,
         ClientMsg::Seek { position_sec } => state::Command::Seek(position_sec),
     };
     app.commands

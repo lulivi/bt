@@ -297,7 +297,7 @@ async fn seeking_with_the_progress_bar_moves_playback() {
 }
 
 #[tokio::test]
-async fn the_loop_button_follows_the_shared_state() {
+async fn the_loop_button_cycles_through_shared_modes() {
     let bt = Bt::start(2);
     let mut ws = bt.ws().await;
     let mut chrome = Chrome::start("").await;
@@ -313,26 +313,37 @@ async fn the_loop_button_follows_the_shared_state() {
         .until(
             "loop available and released",
             wait,
-            "typeof loopBtn === 'object' && !loopBtn.disabled && loopBtn.getAttribute('aria-pressed') === 'false'",
+            "typeof loopBtn === 'object' && !loopBtn.disabled && loopBtn.textContent === 'Loop off'",
         )
         .await;
     chrome.eval("loopBtn.click()").await;
-    ws.until("loop enabled", |s| s["loop"] == true).await;
+    ws.until("queue loop", |s| s["loop"] == "queue").await;
     chrome
         .until(
-            "loop pressed",
+            "queue loop shown",
             wait,
-            "loopBtn.getAttribute('aria-pressed') === 'true'",
+            "loopBtn.textContent === 'Loop queue'",
         )
         .await;
 
-    ws.send(json!({"type": "setLoop", "loop": false})).await;
+    chrome.eval("loopBtn.click()").await;
+    ws.until("song loop", |s| s["loop"] == "song").await;
     chrome
         .until(
-            "loop released",
+            "song loop shown",
             wait,
-            "loopBtn.getAttribute('aria-pressed') === 'false'",
+            "loopBtn.textContent === 'Loop song'",
         )
+        .await;
+
+    chrome.eval("loopBtn.click()").await;
+    ws.until("loop off", |s| s["loop"] == "off").await;
+    chrome
+        .until("loop off shown", wait, "loopBtn.textContent === 'Loop off'")
+        .await;
+
+    chrome.eval("loopBtn.click(); loopBtn.click()").await;
+    ws.until("two quick clicks reach song loop", |s| s["loop"] == "song")
         .await;
 }
 

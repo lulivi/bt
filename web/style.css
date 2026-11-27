@@ -26,7 +26,8 @@ button.big {
   padding: 1.5rem;
   font-size: 1.5rem;
 }
-#loop[aria-pressed="true"] {
+#loop[data-mode="queue"],
+#loop[data-mode="song"] {
   background: Highlight;
   color: HighlightText;
 }

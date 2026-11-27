@@ -87,7 +87,7 @@ async fn pasted_links_play_in_sequence() {
 async fn loop_is_shared_restored_and_restarts_the_queue() {
     let mut bt = Bt::start(2);
     let mut ws = bt.ws().await;
-    assert_eq!(ws.recv().await["loop"], false);
+    assert_eq!(ws.recv().await["loop"], "off");
     ws.send(json!({"type": "pause"})).await;
     for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
         ws.add(&format!("https://youtu.be/{id}")).await;
@@ -96,9 +96,9 @@ async fn loop_is_shared_restored_and_restarts_the_queue() {
         (0..2).all(|i| status(s, i) == "ready")
     })
     .await;
-    ws.send(json!({"type": "setLoop", "loop": true})).await;
+    ws.send(json!({"type": "setLoop", "loop": "queue"})).await;
     bt.saved("loop enabled and both entries ready", |s| {
-        s["loop"] == true && s["queue"][1]["file"].is_string()
+        s["loop"] == "queue" && s["queue"][1]["file"].is_string()
     })
     .await;
 
@@ -106,7 +106,7 @@ async fn loop_is_shared_restored_and_restarts_the_queue() {
     let mut ws = bt.ws().await;
     let mut friend = bt.ws().await;
     let restored = ws.recv().await;
-    assert_eq!(restored["loop"], true);
+    assert_eq!(restored["loop"], "queue");
     assert_eq!(restored["currentIndex"], 0);
     assert_eq!(restored["playing"], false);
 
@@ -118,9 +118,9 @@ async fn loop_is_shared_restored_and_restarts_the_queue() {
         .until("loop back to the first entry", |s| s["currentIndex"] == 0)
         .await;
 
-    ws.send(json!({"type": "setLoop", "loop": false})).await;
+    ws.send(json!({"type": "setLoop", "loop": "off"})).await;
     friend
-        .until("loop disabled for both listeners", |s| s["loop"] == false)
+        .until("loop disabled for both listeners", |s| s["loop"] == "off")
         .await;
     friend
         .until("queue idle", |s| s["currentIndex"].is_null())
@@ -136,6 +136,7 @@ async fn a_single_entry_loop_publishes_a_fresh_playback_position() {
     let first = ws
         .until("the entry playing", |s| s["currentIndex"] == 0)
         .await;
+    assert_eq!(first["loop"], "queue");
     let at = first["at"].as_f64().unwrap();
     let replayed = ws
         .until("the same entry playing again", |s| {
@@ -144,6 +145,40 @@ async fn a_single_entry_loop_publishes_a_fresh_playback_position() {
         .await;
     assert_eq!(replayed["queue"][0]["uid"], first["queue"][0]["uid"]);
     assert!(replayed["positionSec"].as_f64().unwrap() < 1.0);
+}
+
+#[tokio::test]
+async fn song_loop_replays_the_current_entry_with_another_ready() {
+    let mut bt = Bt::start(2);
+    let mut ws = bt.ws().await;
+    ws.send(json!({"type": "pause"})).await;
+    for id in ["aaaaaaaaaaa", "bbbbbbbbbbb"] {
+        ws.add(&format!("https://youtu.be/{id}")).await;
+    }
+    ws.send(json!({"type": "setLoop", "loop": "song"})).await;
+    bt.saved("song loop and both entries ready", |s| {
+        s["loop"] == "song" && s["currentIndex"] == 0 && s["queue"][1]["file"].is_string()
+    })
+    .await;
+
+    bt.restart(|_| {});
+    let mut ws = bt.ws().await;
+    assert_eq!(ws.recv().await["loop"], "song");
+    ws.send(json!({"type": "play"})).await;
+    let playing = ws.until("playing", |s| s["playing"] == true).await;
+    let at = playing["at"].as_f64().unwrap();
+
+    let replayed = ws
+        .until("the first entry playing again", |s| {
+            assert_eq!(s["currentIndex"], 0);
+            s["at"].as_f64().is_some_and(|new| new > at + 1.0)
+        })
+        .await;
+    assert!(replayed["positionSec"].as_f64().unwrap() < 1.0);
+
+    ws.send(json!({"type": "next"})).await;
+    ws.until("manual next still advances", |s| s["currentIndex"] == 1)
+        .await;
 }
 
 #[tokio::test]

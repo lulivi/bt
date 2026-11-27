@@ -332,7 +332,8 @@ function render(state) {
   applyMute();
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
-  loopBtn.setAttribute("aria-pressed", state.loop === true);
+  loopBtn.dataset.mode = state.loop;
+  loopBtn.textContent = "Loop " + state.loop;
   loopBtn.disabled = false;
   const upcomingCount = state.currentIndex == null ? 0 : state.queue.length - state.currentIndex - 1;
   shuffleBtn.disabled = upcomingCount < 2;
@@ -384,9 +385,7 @@ toggleBtn.addEventListener("click", () => {
 });
 document.getElementById("prev").addEventListener("click", () => send({ type: "prev" }));
 document.getElementById("next").addEventListener("click", () => send({ type: "next" }));
-loopBtn.addEventListener("click", () =>
-  send({ type: "setLoop", loop: loopBtn.getAttribute("aria-pressed") !== "true" }),
-);
+loopBtn.addEventListener("click", () => send({ type: "cycleLoop" }));
 shuffleBtn.addEventListener("click", () => send({ type: "shuffle" }));
 
 // A phone coming back from a locked screen: reconnect now instead of waiting for backoff.
