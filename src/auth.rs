@@ -163,7 +163,9 @@ pub fn validate(tokens: &[(String, Uuid)]) -> anyhow::Result<()> {
 ///   page.
 /// - `/ws` must also have an `Origin` equal to the public origin, or it gets 403, since
 ///   `SameSite=Lax` still sends the cookie from sibling subdomains.
-pub async fn check(State(access): State<Arc<Access>>, req: Request, next: Next) -> Response {
+///
+/// A request let through carries its token as a [`Uuid`] extension, to tell Listeners apart.
+pub async fn check(State(access): State<Arc<Access>>, mut req: Request, next: Next) -> Response {
     let denied = (StatusCode::UNAUTHORIZED, Html(DENIED)).into_response();
     let uri = req.uri();
     if uri.path() == "/"
@@ -181,17 +183,15 @@ pub async fn check(State(access): State<Arc<Access>>, req: Request, next: Next) 
         )
             .into_response();
     }
-    if !cookie_token(req.headers())
-        .and_then(|t| access.grants(t))
-        .is_some()
-    {
+    let Some(token) = cookie_token(req.headers()).and_then(|t| access.grants(t)) else {
         return denied;
-    }
+    };
     if uri.path() == "/ws"
         && req.headers().get(header::ORIGIN).map(|o| o.as_bytes()) != Some(access.origin.as_bytes())
     {
         return StatusCode::FORBIDDEN.into_response();
     }
+    req.extensions_mut().insert(token);
     next.run(req).await
 }
 

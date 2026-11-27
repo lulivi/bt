@@ -10,10 +10,13 @@ mod radio;
 mod state;
 mod youtube;
 
+use std::collections::{HashMap, VecDeque};
 use std::io::IsTerminal;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use axum::Extension;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -42,6 +45,40 @@ struct App {
     state: watch::Receiver<state::State>,
     /// Stream time, sent with every State.
     clock: radio::Clock,
+    /// Each Access link's recent adds, shared by all its connections.
+    adds: Arc<Mutex<HashMap<uuid::Uuid, Arc<Mutex<AddLimit>>>>>,
+}
+
+/// How many Songs a Listener may add per [`ADD_WINDOW`].
+///
+/// It counts `add` messages, not Songs: a playlist link will count once.
+const MAX_ADDS: usize = 10;
+
+/// The rolling window [`MAX_ADDS`] applies to.
+const ADD_WINDOW: Duration = Duration::from_secs(60);
+
+/// One Listener's adds in the last [`ADD_WINDOW`], oldest first.
+#[derive(Default)]
+struct AddLimit(VecDeque<Instant>);
+
+/// Allowing adds.
+impl AddLimit {
+    /// Records an add at `now` and returns `true`, or returns `false` if the Listener already
+    /// added [`MAX_ADDS`] Songs in the [`ADD_WINDOW`] before `now`.
+    fn allow(&mut self, now: Instant) -> bool {
+        while self
+            .0
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= ADD_WINDOW)
+        {
+            self.0.pop_front();
+        }
+        if self.0.len() >= MAX_ADDS {
+            return false;
+        }
+        self.0.push_back(now);
+        true
+    }
 }
 
 /// Starts the Radio, the state actor and the web server, configured by the config file and the `BT_*` variables.
@@ -87,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
             commands,
             state,
             clock,
+            adds: Arc::default(),
         });
     match settings.access {
         Some(access) => {
@@ -100,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         }
         None => tracing::warn!("no Access links are configured: anyone can use bt"),
     }
+    let app = app.layer(axum::middleware::map_response(security_headers));
     let addr = settings.addr;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -107,6 +146,30 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The Content Security Policy of every response.
+///
+/// Only bt's own files load; `blob:` media is the MediaSource the page plays on phones, and no
+/// other site may frame the page.
+const CSP: &str = "default-src 'self'; media-src 'self' blob:; frame-ancestors 'none'";
+
+/// Adds the security headers to `res`; the outermost layer, so even refusals get them.
+async fn security_headers(mut res: Response) -> Response {
+    let headers = res.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(CSP),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    res
 }
 
 /// Serves the endless MP3 broadcast.
@@ -184,18 +247,28 @@ enum ServerMsg<'a> {
 
 /// Upgrades a request to a Listener's WebSocket.
 ///
-/// Messages over 4 KB are refused.
-async fn ws(upgrade: WebSocketUpgrade, State(app): State<App>) -> Response {
+/// Messages over 4 KB are refused. Connections with the same Access link `token` share their
+/// [`AddLimit`]; without Access links, each connection has its own.
+async fn ws(
+    upgrade: WebSocketUpgrade,
+    State(app): State<App>,
+    token: Option<Extension<uuid::Uuid>>,
+) -> Response {
+    // ponytail: without Access links a Listener can't be told apart, so more tabs mean more adds.
+    let adds = match token {
+        Some(Extension(token)) => app.adds.lock().unwrap().entry(token).or_default().clone(),
+        None => Arc::default(),
+    };
     upgrade
         .max_message_size(4096)
-        .on_upgrade(|socket| listener(socket, app))
+        .on_upgrade(|socket| listener(socket, app, adds))
 }
 
 /// Serves one Listener's WebSocket until it closes.
 ///
-/// Sends the full State on connect and on every change, and handles the messages received.
-/// Errors go to this Listener only.
-async fn listener(mut socket: WebSocket, mut app: App) {
+/// Sends the full State on connect and on every change, and handles the messages received, with
+/// `adds` limiting this Listener's adds. Errors go to this Listener only.
+async fn listener(mut socket: WebSocket, mut app: App, adds: Arc<Mutex<AddLimit>>) {
     // `changed()` never fires for the value already there, so send it first.
     let mut out = state_msg(&mut app);
     loop {
@@ -213,7 +286,7 @@ async fn listener(mut socket: WebSocket, mut app: App) {
                 msg = socket.recv() => {
                     let Some(Ok(msg)) = msg else { return };
                     let Message::Text(text) = msg else { continue };
-                    if let Err(message) = handle(&app, &text).await {
+                    if let Err(message) = handle(&app, &adds, &text).await {
                         break to_text(&ServerMsg::Error { message });
                     }
                 }
@@ -224,14 +297,20 @@ async fn listener(mut socket: WebSocket, mut app: App) {
 
 /// Handles one message from a Listener, sending its command to the state actor.
 ///
+/// Valid adds count against the Listener's `adds`.
+///
 /// # Errors
 ///
 /// Returns the text to show the Listener if the message is unknown, the link isn't a YouTube
-/// video or the server is shutting down.
-async fn handle(app: &App, text: &str) -> Result<(), &'static str> {
+/// video, the Listener is adding too fast or the server is shutting down.
+async fn handle(app: &App, adds: &Mutex<AddLimit>, text: &str) -> Result<(), &'static str> {
     let cmd = match serde_json::from_str(text).map_err(|_| "Unknown command")? {
         ClientMsg::Add { url } => {
-            state::Command::Add(youtube::video_id(&url).ok_or("That is not a YouTube video link")?)
+            let id = youtube::video_id(&url).ok_or("That is not a YouTube video link")?;
+            if !adds.lock().unwrap().allow(Instant::now()) {
+                return Err("Too many songs added; wait a minute");
+            }
+            state::Command::Add(id)
         }
         ClientMsg::Play => state::Command::Play,
         ClientMsg::Pause => state::Command::Pause,
@@ -267,6 +346,9 @@ fn to_text(msg: &ServerMsg) -> Message {
 }
 
 /// Serves a file of the embedded web page, or 404.
+///
+/// `no-cache` makes browsers check for a new version every time, so a deploy shows on the next
+/// reload.
 async fn static_file(uri: Uri) -> Response {
     let path = match uri.path().trim_start_matches('/') {
         "" => "index.html",
@@ -281,5 +363,30 @@ async fn static_file(uri: Uri) -> Response {
         Some("css") => "text/css; charset=utf-8",
         _ => "application/octet-stream",
     };
-    ([(header::CONTENT_TYPE, mime)], file.data).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        file.data,
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adds_are_limited_per_rolling_window() {
+        let mut adds = AddLimit::default();
+        let start = Instant::now();
+        for i in 0..MAX_ADDS {
+            assert!(adds.allow(start + Duration::from_secs(i as u64)), "add {i}");
+        }
+        assert!(!adds.allow(start + Duration::from_secs(30)));
+        // The first add leaves the window, making room for one more.
+        assert!(adds.allow(start + ADD_WINDOW));
+        assert!(!adds.allow(start + ADD_WINDOW));
+    }
 }

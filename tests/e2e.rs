@@ -36,6 +36,10 @@ fn serves_the_page() {
     let (head, body) = get(&bt.addr, "/", 1);
     assert!(head.contains("content-type: text/html"), "{head}");
     assert!(String::from_utf8_lossy(&body).contains("<!doctype html>"));
+    for path in ["/", "/app.js", "/style.css"] {
+        let (head, _) = get(&bt.addr, path, 0);
+        assert!(head.contains("cache-control: no-cache"), "{path}: {head}");
+    }
 }
 
 #[tokio::test]
@@ -509,6 +513,25 @@ fn everything_needs_a_valid_access_link() {
     }
 }
 
+#[test]
+fn every_response_has_the_security_headers() {
+    let bt = start_private();
+    for (path, headers) in [
+        ("/".to_string(), format!("Cookie: bt_token={TOKEN}\r\n")),
+        ("/".into(), String::new()),
+        (format!("/?token={TOKEN}"), String::new()),
+    ] {
+        let (head, _) = get_with(&bt.addr, &path, &headers, 0);
+        for want in [
+            "content-security-policy: default-src 'self'; media-src 'self' blob:; frame-ancestors 'none'",
+            "x-content-type-options: nosniff",
+            "referrer-policy: no-referrer",
+        ] {
+            assert!(head.contains(want), "{path} {headers}: {head}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_websocket_needs_the_cookie_and_the_public_origin() {
     let bt = start_private();
@@ -522,6 +545,23 @@ async fn the_websocket_needs_the_cookie_and_the_public_origin() {
     assert_eq!(ws_status(&bt, &sibling).await, 403);
     let ok = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
     assert_eq!(ws_status(&bt, &ok).await, 101);
+}
+
+#[tokio::test]
+async fn adds_are_limited_per_access_link() {
+    let bt = start_private();
+    let cookie = format!("bt_token={TOKEN}");
+    let headers = [("cookie", cookie.as_str()), ("origin", PUBLIC_URL)];
+    let (mut a, mut b) = (bt.ws_with(&headers).await, bt.ws_with(&headers).await);
+    for i in 0..10 {
+        let ws = if i % 2 == 0 { &mut a } else { &mut b };
+        ws.add(&format!("https://www.youtube.com/watch?v=aaaaaaaaaa{i}"))
+            .await;
+    }
+    b.until("10 entries", |s| s["queue"][9].is_object()).await;
+    b.add("https://www.youtube.com/watch?v=bbbbbbbbbbb").await;
+    let error = b.until("an error", |m| m["type"] == "error").await;
+    assert_eq!(error["message"], "Too many songs added; wait a minute");
 }
 
 #[test]
