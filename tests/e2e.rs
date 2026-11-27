@@ -208,7 +208,9 @@ fn get(addr: &str, path: &str, body_bytes: usize) -> (String, Vec<u8>) {
     get_with(addr, path, "", body_bytes)
 }
 
-/// Requests `path` like [`get`], with the extra header lines `headers` (each ending in `\r\n`).
+/// Requests `path` like [`get`], with extra headers.
+///
+/// `headers` are raw header lines, each ending in `\r\n`.
 fn get_with(addr: &str, path: &str, headers: &str, body_bytes: usize) -> (String, Vec<u8>) {
     let mut tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
@@ -561,7 +563,7 @@ const TOKEN: &str = "67e55044-10b1-426f-9247-bb680e5fe0c8";
 /// The public URL the auth tests configure.
 const PUBLIC_URL: &str = "https://bt.example.com";
 
-/// Starts `bt` with one Access link, `lorena`'s.
+/// Starts `bt` with one Access link, `lorena`'s [`TOKEN`], for [`PUBLIC_URL`].
 fn start_private() -> Bt {
     Bt::start_with(
         2,
@@ -572,7 +574,13 @@ fn start_private() -> Bt {
     )
 }
 
-/// Opens `/ws` on `bt` with the header lines `headers`, returning the HTTP status.
+/// Opens `/ws` on `bt` with the extra headers `headers` (name and value).
+///
+/// Returns the HTTP status of the handshake: 101 if it was accepted.
+///
+/// # Panics
+///
+/// Panics if a header is invalid or the connection fails for any reason but an HTTP error.
 async fn ws_status(bt: &Bt, headers: &[(&'static str, &str)]) -> u16 {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut req = format!("ws://{}/ws", bt.addr)

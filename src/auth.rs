@@ -35,8 +35,11 @@ pub struct Access {
 
 /// Configuration and checks.
 impl Access {
-    /// Builds the Access links from `BT_ACCESS_TOKENS` and `BT_PUBLIC_URL`; `None` if there are
-    /// no tokens, which leaves bt open to anyone.
+    /// Builds the Access links from the values of `BT_ACCESS_TOKENS` and `BT_PUBLIC_URL`.
+    ///
+    /// `tokens` is `name:uuid,name:uuid` (see [`parse`]); `public_url` is the URL Listeners open,
+    /// of which only the origin is kept. Returns `None` if `tokens` is unset, which leaves bt open
+    /// to anyone; `public_url` is then ignored.
     ///
     /// # Errors
     ///
@@ -60,14 +63,19 @@ impl Access {
     }
 
     /// Returns each invited person's name and Access link.
+    ///
+    /// A link is `<origin>/?token=<uuid>`.
     pub fn links(&self) -> impl Iterator<Item = (&str, String)> {
         self.tokens
             .iter()
             .map(|(name, token)| (name.as_str(), format!("{}/?token={token}", self.origin)))
     }
 
-    /// Returns `token` as a UUID if it is a configured one, compared in constant time against
-    /// all of them.
+    /// Checks whether `token` is a configured one.
+    ///
+    /// `token` is compared in constant time against every configured token, so the time taken
+    /// doesn't reveal how close it came. Returns it as a UUID if it matches, `None` if it doesn't
+    /// or isn't a UUID.
     fn grants(&self, token: &str) -> Option<Uuid> {
         let token = Uuid::parse_str(token).ok()?;
         let found = self
@@ -80,7 +88,10 @@ impl Access {
     }
 }
 
-/// Parses `name:uuid,name:uuid`, one entry per invited person.
+/// Parses the value of `BT_ACCESS_TOKENS`.
+///
+/// `s` is `name:uuid,name:uuid`, one entry per invited person; whitespace around names, UUIDs
+/// and entries is ignored. Returns the entries in order.
 ///
 /// # Errors
 ///
@@ -113,11 +124,14 @@ fn parse(s: &str) -> anyhow::Result<Vec<(String, Uuid)>> {
     Ok(tokens)
 }
 
-/// Lets a request through only with a valid Access link.
+/// Lets a request through only with a valid Access link; the middleware for every route.
 ///
-/// `/?token=<uuid>` with a valid token sets the cookie and redirects to `/`; any other request
-/// without a valid cookie gets 401. `/ws` must also come from a page on the public origin, or it
-/// gets 403.
+/// - `/?token=<uuid>` with a valid token sets the [`COOKIE`] cookie (`Secure` over HTTPS) and
+///   redirects to `/`; with an invalid one it gets 401.
+/// - Any other request without a cookie holding a valid token gets 401, with the [`DENIED`]
+///   page.
+/// - `/ws` must also have an `Origin` equal to the public origin, or it gets 403, since
+///   `SameSite=Lax` still sends the cookie from sibling subdomains.
 pub async fn check(State(access): State<Arc<Access>>, req: Request, next: Next) -> Response {
     let denied = (StatusCode::UNAUTHORIZED, Html(DENIED)).into_response();
     let uri = req.uri();
@@ -150,14 +164,16 @@ pub async fn check(State(access): State<Arc<Access>>, req: Request, next: Next) 
     next.run(req).await
 }
 
-/// Returns the `token` parameter of `query`, if any.
+/// Returns the decoded `token` parameter of the URL query `query`, or `None` if it has none.
 fn query_token(query: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(k, _)| k == "token")
         .map(|(_, v)| v.into_owned())
 }
 
-/// Returns the value of the [`COOKIE`] cookie, if any.
+/// Returns the value of the [`COOKIE`] cookie among the `Cookie` headers in `headers`.
+///
+/// Returns `None` if there is no such cookie.
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(header::COOKIE)
