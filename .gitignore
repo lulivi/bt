@@ -28,3 +28,6 @@ cache/
 
 # Saved queue
 state.json*
+
+# Docker volume (make docker-run)
+data/

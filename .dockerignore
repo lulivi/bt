@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Lorena Jiménez, Luis Liñán
+# SPDX-License-Identifier: MIT
+
+# The image needs only the static bt binaries.
+*
+!target/x86_64-unknown-linux-musl/release/bt
+!target/aarch64-unknown-linux-musl/release/bt
